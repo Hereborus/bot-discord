@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import prism from "prism-media";
 import dotenv from "dotenv";
+import { fft, util as fftUtil } from "fft-js";
 
 dotenv.config();
 
@@ -13,10 +14,21 @@ const AUDIO_CONFIG = {
     thresholds: {
         low: -50,
         medium: -30,
-        high: -15,
+        high: -15, // above this is "high" volume
     },
     durationWindow: 1000, // rolling window to aggregate dB samples
     sampleInterval: 200, // how often analysis tick fires (ms)
+    // frequency bands (Hz) and minimum energy to trigger
+    freqBands: [
+        { name: "low", min: 20, max: 500 },
+        { name: "mid", min: 500, max: 2000 },
+        { name: "high", min: 2000, max: 10000 },
+    ],
+    // emotions for high-volume triggers based on frequency dominance
+    emotions: {
+        scream: "high", // high volume + high-frequency dominant -> scream/fear
+        anger: "low", // high volume + low-frequency dominant -> anger
+    },
 };
 
 // expose config logging
@@ -131,6 +143,8 @@ client.on("messageCreate", async (message) => {
                         let sumSquares = 0;
                         let sampleCount = 0;
                         const history = [];
+                        // buffer for frequency analysis (mono)
+                        const freqBuffer = [];
 
                         // Agrégation périodique pour calculer RMS -> dB avec pondération durée
                         const tick = setInterval(() => {
@@ -160,10 +174,42 @@ client.on("messageCreate", async (message) => {
                                 else if (avg < AUDIO_CONFIG.thresholds.high)
                                     status = "medium";
                                 else status = "high";
+                                // frequency analysis
+                                let freqInfo = null;
+                                if (freqBuffer.length >= 1024) {
+                                    // compute FFT
+                                    const phasors = fft(
+                                        freqBuffer.slice(0, 1024),
+                                    );
+                                    const mags = fftUtil.fftMag(phasors);
+                                    const binFreq = 48000 / 1024; // approx Hz per bin
+                                    const bandE = {};
+                                    AUDIO_CONFIG.freqBands.forEach((b) => {
+                                        let sum = 0,
+                                            count = 0;
+                                        const startBin = Math.floor(
+                                            b.min / binFreq,
+                                        );
+                                        const endBin = Math.ceil(
+                                            b.max / binFreq,
+                                        );
+                                        for (
+                                            let i = startBin;
+                                            i <= endBin && i < mags.length;
+                                            i++
+                                        ) {
+                                            sum += mags[i];
+                                            count++;
+                                        }
+                                        bandE[b.name] = count ? sum / count : 0;
+                                    });
+                                    freqInfo = bandE;
+                                }
                                 userLevels.set(userId, {
                                     rms,
                                     db: Math.round(db * 100) / 100,
                                     status,
+                                    freq: freqInfo,
                                     updated: now,
                                 });
                                 sumSquares = 0;
@@ -176,6 +222,10 @@ client.on("messageCreate", async (message) => {
                                 const sample = chunk.readInt16LE(i);
                                 sumSquares += sample * sample;
                                 sampleCount++;
+                                // push mono sample to freqBuffer (use left channel)
+                                freqBuffer.push(sample / 32768);
+                                if (freqBuffer.length > 2048)
+                                    freqBuffer.shift();
                             }
                         });
 

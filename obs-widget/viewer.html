@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="fr">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Audio Levels Viewer</title>
+        <link rel="stylesheet" href="style.css" />
+    </head>
+    <body class="viewer-mode">
+        <div class="viewer-container">
+            <h1 class="viewer-title">Discord Audio Levels</h1>
+            <div class="users-grid" id="grid"></div>
+        </div>
+
+        <script>
+            const sourceUrl =
+                new URLSearchParams(location.search).get("sourceUrl") ||
+                "http://localhost:3000/levels";
+            const imagesBase =
+                new URLSearchParams(location.search).get("imagesBase") ||
+                "./pnjtuber";
+            const grid = document.getElementById("grid");
+
+            function getImagePath(userId, status, emotion) {
+                const subdir = status === "high" && emotion ? emotion : status;
+                return `${imagesBase}/user${userId}/${status}/${subdir}.png`;
+            }
+
+            // Pour le statut 'silent', alterner entre on.png et off.png pour clignement
+            function getBlinkImagePaths(userId) {
+                return {
+                    on: `${imagesBase}/user${userId}/silent/on.png`,
+                    off: `${imagesBase}/user${userId}/silent/off.png`,
+                };
+            }
+
+            async function update() {
+                try {
+                    const res = await fetch(sourceUrl, { cache: "no-store" });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const data = await res.json();
+
+                    grid.innerHTML = "";
+                    for (const [userId, info] of Object.entries(data)) {
+                        const card = document.createElement("div");
+                        card.className = "user-card";
+
+                        const name = document.createElement("div");
+                        name.className = "user-name";
+                        name.textContent = `User ${userId}`;
+
+                        const img = document.createElement("img");
+                        img.className = "user-image";
+
+                        if (info.status === "silent") {
+                            // Ajouter classe blinking pour l'animation clignement
+                            img.classList.add("blinking");
+                            // Commencer avec on.png
+                            const paths = getBlinkImagePaths(userId);
+                            img.src = paths.on;
+                            // Alterner les images
+                            let isOn = true;
+                            setInterval(() => {
+                                isOn = !isOn;
+                                img.src = isOn ? paths.on : paths.off;
+                            }, 300);
+                        } else {
+                            const imgPath = getImagePath(
+                                userId,
+                                info.status,
+                                info.emotion,
+                            );
+                            img.src = imgPath;
+                        }
+                        img.alt = `${info.status}${info.emotion ? " - " + info.emotion : ""}`;
+                        img.onerror = () => {
+                            const placeholder = document.createElement("div");
+                            placeholder.style.cssText =
+                                "width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#555;font-size:12px;";
+                            placeholder.textContent = "Image not found";
+                            img.replaceWith(placeholder);
+                        };
+
+                        const meta = document.createElement("div");
+                        meta.className = "user-meta";
+
+                        const statusBadge = document.createElement("span");
+                        statusBadge.className = "status-badge";
+                        statusBadge.textContent = info.status;
+                        meta.appendChild(statusBadge);
+
+                        if (info.emotion) {
+                            const emotionBadge = document.createElement("span");
+                            emotionBadge.className = "emotion-badge";
+                            emotionBadge.textContent = info.emotion;
+                            meta.appendChild(emotionBadge);
+                        }
+
+                        const db = document.createElement("span");
+                        db.className = "db-value";
+                        db.textContent = `${info.db?.toFixed(1) || "-"} dB`;
+                        meta.appendChild(db);
+
+                        if (info.freq) {
+                            const freqDiv = document.createElement("div");
+                            freqDiv.className = "freq-info";
+                            freqDiv.textContent = `freq: low=${info.freq.low?.toFixed(2)} mid=${info.freq.mid?.toFixed(2)} high=${info.freq.high?.toFixed(2)}`;
+                            meta.appendChild(freqDiv);
+                        }
+
+                        card.appendChild(name);
+                        card.appendChild(img);
+                        card.appendChild(meta);
+                        grid.appendChild(card);
+                    }
+                } catch (err) {
+                    grid.innerHTML = `<div class="viewer-error">Erreur: ${err.message}</div>`;
+                }
+            }
+
+            setInterval(update, 200);
+            update();
+        </script>
+    </body>
+</html>
