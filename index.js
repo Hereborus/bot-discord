@@ -72,6 +72,6 @@ client.on("voiceStateUpdate", (oldState, newState) => {
                 console.log("Toujours seul, je quitte");
                 connection.destroy();
             }
-        }, 5000); // attend 5 secondes
+        }, 700); // attend 5 secondes
     }
 });
