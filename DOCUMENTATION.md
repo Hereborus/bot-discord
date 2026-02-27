@@ -1,6 +1,6 @@
 # Documentation du bot Discord (index.js)
 
-Ce document explique en détail le fonctionnement de `index.js`, les points de configuration, les endpoints HTTP disponibles, et la structure du widget OBS.
+Ce document explique en détail le fonctionnement de `index.js`, les points de configuration, les endpoints HTTP disponibles, la structure du widget OBS, et l'analyse des fréquences audio.
 
 ## 1. Configuration générale
 
@@ -26,6 +26,20 @@ const AUDIO_CONFIG = {
 ```
 
 Ces valeurs déterminent comment le volume reçu est traduit en statut (`silent`, `low`, `medium`, `high`). Le système garde les échantillons dB des dernières `durationWindow` millisecondes, puis calcule leur moyenne pour atténuer les pics rapides (une personne qui crie longtemps reste dans un état "high").
+
+### Analyse fréquentielle et arbre des triggers
+
+En plus du niveau, le bot calcule une transformée de Fourier rapide (FFT) sur les derniers 1024 échantillons audio pour extraire l'énergie spectrale. Trois bandes configurables (`low`, `mid`, `high`) sont mesurées et renvoyées dans l'objet `freq` de `/levels`.
+Cela permet, par exemple, de réagir différemment lorsque l'audio contient beaucoup de basses ou d'aigus.
+
+Lorsque le volume se situe dans l'état **high**, un sous‑trigger est déterminé en fonction de la domination fréquentielle :
+
+- si la bande `high` est la plus énergétique, on considère un _cri aigu_ (`emotion: "scream"`), utile pour peur ou surprise.
+- si la bande `low` domine, on passe à un _grognement grave_ (`emotion: "anger"`), utile pour colère.
+
+Ces sous‑triggers peuvent être utilisés côté client pour afficher des images différentes : l'utilisateur peut organiser son dossier d'assets selon cette arborescence, par exemple `images/<userId>/high/scream.png` ou `images/<userId>/high/anger.png`.
+
+Les paramètres de bande et d'émotion sont dans `AUDIO_CONFIG.freqBands` et `AUDIO_CONFIG.emotions`, et la page `/config` expose également cette configuration.
 
 La configuration est loguée au démarrage dans la console et exposée via `GET /config`.
 
