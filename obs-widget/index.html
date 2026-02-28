@@ -1,17 +1,866 @@
-<!doctype html>
-<html>
-    <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width,initial-scale=1" />
-        <title>Discord Levels Widget</title>
-        <link rel="stylesheet" href="style.css" />
-    </head>
-    <body>
-        <div id="config-panel">
-            <h2>Image settings (optional)</h2>
-            <div id="image-controls"></div>
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PNGTuber Config</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap');
+
+:root {
+  --bg:      #0c0c10;
+  --bg2:     #13131a;
+  --bg3:     #1a1a24;
+  --border:  #252535;
+  --accent:  #5b4ff5;
+  --accent2: #00d9b8;
+  --danger:  #e74c6c;
+  --warn:    #f0a500;
+  --text:    #dde1f0;
+  --muted:   #5a5a7a;
+  --r:       8px;
+  --font:    'Outfit', sans-serif;
+  --mono:    'Fira Code', monospace;
+
+  /* état colors */
+  --c-silent: #3d4263;
+  --c-low:    #1a5fbf;
+  --c-medium: #b36b00;
+  --c-high:   #b81c3c;
+  --c-anger:  #c43a1a;
+  --c-scream: #8b1ac4;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ══ HEADER ══════════════════════════════════════════════════ */
+header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  position: sticky; top: 0; z-index: 100;
+  flex-wrap: wrap;
+}
+.logo { font-family: var(--mono); font-size: 0.95rem; color: var(--accent2); white-space: nowrap; }
+.logo em { color: var(--accent); font-style: normal; }
+
+.api-row {
+  display: flex; align-items: center; gap: 0.4rem;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.3rem 0.7rem;
+}
+.api-row label { font-size: 0.68rem; color: var(--muted); font-family: var(--mono); }
+.api-input {
+  background: none; border: none; outline: none;
+  color: var(--accent2); font-family: var(--mono); font-size: 0.75rem; width: 170px;
+}
+.api-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+.api-dot.ok  { background: var(--accent2); box-shadow: 0 0 6px var(--accent2); }
+.api-dot.err { background: var(--danger); }
+
+.hflex { display: flex; align-items: center; gap: 0.5rem; }
+.ml    { margin-left: auto; }
+
+.obs-btn {
+  padding: 0.35rem 0.9rem;
+  background: var(--accent); color: #fff;
+  border: none; border-radius: 6px;
+  font-family: var(--font); font-size: 0.78rem; font-weight: 600;
+  cursor: pointer; transition: opacity 0.15s; white-space: nowrap;
+}
+.obs-btn:hover { opacity: 0.85; }
+.obs-btn.ghost { background: var(--bg3); color: var(--muted); border: 1px solid var(--border); }
+
+/* ══ TABS ════════════════════════════════════════════════════ */
+.tabs-bar {
+  display: flex; gap: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  padding: 0 1.5rem;
+}
+.tab-btn {
+  padding: 0.6rem 1.2rem;
+  background: none; border: none;
+  color: var(--muted); font-family: var(--font); font-size: 0.85rem; font-weight: 500;
+  cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  transition: color 0.15s;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--accent2); border-bottom-color: var(--accent2); }
+
+/* ══ PANELS ══════════════════════════════════════════════════ */
+.panel { display: none; flex: 1; padding: 1.5rem; flex-direction: column; gap: 1.5rem; max-width: 1100px; width: 100%; margin: 0 auto; }
+.panel.active { display: flex; }
+
+/* ══ SECTION TITLE ═══════════════════════════════════════════ */
+.sec { font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); margin-bottom: 0.75rem; }
+
+/* ══ CARD ════════════════════════════════════════════════════ */
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+.card-head {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.6rem 1rem; border-bottom: 1px solid var(--border);
+  background: var(--bg3); font-size: 0.85rem; font-weight: 600;
+}
+.card-body { padding: 0.75rem; }
+
+/* ══ AVATAR PANEL ════════════════════════════════════════════ */
+.empty-state { text-align: center; padding: 3rem 2rem; color: var(--muted); }
+.empty-state .icon { font-size: 2.5rem; margin-bottom: 0.75rem; }
+.empty-state p { font-size: 0.85rem; line-height: 1.7; }
+.empty-state code { font-family: var(--mono); background: var(--bg3); padding: 0.1rem 0.35rem; border-radius: 3px; color: var(--accent2); }
+
+.user-block { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+.user-head {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); background: var(--bg3);
+}
+.avatar-initials {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--accent); display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 0.8rem; color: #fff; flex-shrink: 0;
+}
+.user-dname { font-weight: 600; font-size: 0.9rem; }
+.user-uid   { font-family: var(--mono); font-size: 0.6rem; color: var(--muted); }
+.speaking-pill {
+  margin-left: auto; font-size: 0.62rem; padding: 0.15rem 0.5rem;
+  border-radius: 20px; background: rgba(0,217,184,0.1); border: 1px solid rgba(0,217,184,0.25);
+  color: var(--accent2); display: none;
+}
+.speaking-pill.on { display: block; }
+
+.states-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px,1fr)); gap: 1px; background: var(--border); }
+.state-col { background: var(--bg2); padding: 0.65rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.state-col-title { display: flex; align-items: center; gap: 0.35rem; font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; }
+.sdot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+
+/* frames */
+.frames-list { display: flex; flex-direction: column; gap: 3px; min-height: 30px; }
+.frame-item {
+  display: flex; align-items: center; gap: 5px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 5px;
+  cursor: grab; user-select: none; transition: border-color 0.1s;
+}
+.frame-item:active { cursor: grabbing; }
+.frame-item.dragging { opacity: 0.35; }
+.frame-item.drag-over { border-color: var(--accent2); }
+.f-handle { color: var(--muted); font-size: 0.7rem; flex-shrink: 0; }
+.f-thumb  { width: 22px; height: 22px; object-fit: cover; border-radius: 2px; flex-shrink: 0; }
+.f-name   { flex: 1; font-size: 0.6rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.f-del    { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 0.7rem; padding: 1px 2px; }
+.f-del:hover { color: var(--danger); }
+
+.add-frame-btn {
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  padding: 4px; background: none; border: 1px dashed var(--border);
+  border-radius: 4px; color: var(--muted); font-size: 0.65rem; font-family: var(--font);
+  cursor: pointer; transition: border-color 0.15s, color 0.15s;
+}
+.add-frame-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+.add-frame-btn input { display: none; }
+
+/* ══ AUDIO CONFIG PANEL ══════════════════════════════════════ */
+.audio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+@media (max-width: 640px) { .audio-grid { grid-template-columns: 1fr; } }
+
+/* threshold sliders */
+.thresh-row {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.5rem 0; border-bottom: 1px solid var(--border);
+}
+.thresh-row:last-child { border-bottom: none; }
+.thresh-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.thresh-label { width: 60px; font-size: 0.8rem; font-weight: 500; }
+.thresh-slider { flex: 1; accent-color: var(--accent); }
+.thresh-val { font-family: var(--mono); font-size: 0.75rem; width: 54px; text-align: right; color: var(--accent2); }
+
+/* hold duration */
+.hold-row { display: flex; align-items: center; gap: 0.75rem; }
+.hold-slider { flex: 1; accent-color: var(--accent); }
+.hold-val { font-family: var(--mono); font-size: 0.78rem; color: var(--accent2); width: 54px; text-align: right; }
+
+/* frame speed */
+.speed-row { display: flex; align-items: center; gap: 0.75rem; }
+.speed-slider { flex: 1; accent-color: var(--accent); }
+.speed-val { font-family: var(--mono); font-size: 0.78rem; color: var(--accent2); width: 54px; text-align: right; }
+
+/* emotions */
+.emotion-list { display: flex; flex-direction: column; gap: 0.75rem; }
+
+.emotion-card {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.6rem;
+}
+.emotion-card-head { display: flex; align-items: center; gap: 0.5rem; }
+.emotion-key { font-family: var(--mono); font-size: 0.8rem; font-weight: 500; flex: 1; }
+.emotion-del { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 0.8rem; }
+.emotion-del:hover { color: var(--danger); }
+
+.emotion-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.field { display: flex; flex-direction: column; gap: 0.25rem; }
+.field label { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.field select, .field input[type=text] {
+  background: var(--bg2); border: 1px solid var(--border);
+  color: var(--text); font-family: var(--font); font-size: 0.78rem;
+  padding: 0.3rem 0.5rem; border-radius: 4px; outline: none;
+  transition: border-color 0.15s;
+}
+.field select:focus, .field input:focus { border-color: var(--accent2); }
+
+.sensitivity-row { display: flex; align-items: center; gap: 0.5rem; }
+.sens-label { font-size: 0.65rem; color: var(--muted); }
+.sens-slider { flex: 1; accent-color: var(--accent); }
+.sens-val { font-family: var(--mono); font-size: 0.72rem; color: var(--accent2); width: 32px; text-align: right; }
+
+.add-emotion-btn {
+  display: flex; align-items: center; justify-content: center; gap: 0.4rem;
+  padding: 0.5rem; background: none; border: 1px dashed var(--border);
+  border-radius: 6px; color: var(--muted); font-family: var(--font); font-size: 0.78rem;
+  cursor: pointer; transition: border-color 0.15s, color 0.15s; width: 100%;
+}
+.add-emotion-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+
+.save-btn {
+  padding: 0.6rem 1.5rem; background: var(--accent2); color: #000;
+  border: none; border-radius: 6px; font-family: var(--font); font-size: 0.85rem;
+  font-weight: 700; cursor: pointer; transition: opacity 0.15s; align-self: flex-start;
+}
+.save-btn:hover { opacity: 0.85; }
+
+/* db meter (live preview) */
+.db-meter-wrap { display: flex; flex-direction: column; gap: 0.75rem; }
+.db-user-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.75rem; }
+.db-name { width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.db-bar-track { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; position: relative; }
+.db-bar-fill { height: 100%; background: var(--accent2); border-radius: 3px; transition: width 0.1s linear; min-width: 2px; }
+.db-val { font-family: var(--mono); font-size: 0.68rem; color: var(--accent2); width: 54px; text-align: right; }
+.db-status { font-size: 0.62rem; padding: 0.1rem 0.35rem; border-radius: 10px; background: var(--bg3); border: 1px solid var(--border); white-space: nowrap; }
+
+/* ══ MODAL URL OBS ════════════════════════════════════════════ */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 200; }
+.overlay.open { display: flex; }
+.modal { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r); padding: 1.5rem; max-width: 500px; width: 90%; display: flex; flex-direction: column; gap: 1rem; }
+.modal h2 { font-size: 1rem; font-weight: 600; }
+.modal p { font-size: 0.78rem; color: var(--muted); line-height: 1.65; }
+.modal-url { font-family: var(--mono); font-size: 0.7rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 5px; padding: 0.6rem 0.8rem; color: var(--accent2); word-break: break-all; user-select: all; }
+.modal-row { display: flex; gap: 0.5rem; }
+
+/* ══ TOAST ════════════════════════════════════════════════════ */
+#toast {
+  position: fixed; bottom: 1.2rem; left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  background: var(--bg3); border: 1px solid var(--border);
+  padding: 0.45rem 1.1rem; border-radius: 20px;
+  font-size: 0.75rem; color: var(--accent2);
+  opacity: 0; transition: opacity 0.2s, transform 0.2s;
+  pointer-events: none; z-index: 999; white-space: nowrap;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<!-- ══ HEADER ═══════════════════════════════════════════════════ -->
+<header>
+  <div class="logo">PNG<em>Tuber</em></div>
+
+  <div class="api-row">
+    <span class="api-dot" id="api-dot"></span>
+    <label>BOT</label>
+    <input class="api-input" id="api-host" value="localhost:3000" placeholder="localhost:3000">
+  </div>
+
+  <div class="hflex ml">
+    <button class="obs-btn ghost" onclick="openModal()">URL OBS</button>
+    <button class="obs-btn" onclick="openViewer()">▶ Viewer</button>
+  </div>
+</header>
+
+<!-- ══ TABS ══════════════════════════════════════════════════════ -->
+<div class="tabs-bar">
+  <button class="tab-btn active" onclick="switchTab('avatars', this)">🎭 Avatars</button>
+  <button class="tab-btn" onclick="switchTab('audio', this)">🎙 Audio Config</button>
+</div>
+
+<!-- ══ PANEL: AVATARS ════════════════════════════════════════════ -->
+<div class="panel active" id="panel-avatars">
+  <div id="empty-state" class="empty-state">
+    <div class="icon">🎙️</div>
+    <p>Lance le bot et tape <code>!join</code> dans Discord.<br>Les membres du canal apparaîtront ici.</p>
+  </div>
+  <div id="users-container" style="display:flex;flex-direction:column;gap:1rem;"></div>
+</div>
+
+<!-- ══ PANEL: AUDIO CONFIG ══════════════════════════════════════ -->
+<div class="panel" id="panel-audio">
+
+  <div class="audio-grid">
+
+    <!-- Thresholds -->
+    <div>
+      <div class="sec">Seuils audio (dB)</div>
+      <div class="card">
+        <div class="card-body" style="display:flex;flex-direction:column;gap:0;">
+          <!-- low -->
+          <div class="thresh-row">
+            <div class="thresh-dot" style="background:var(--c-low)"></div>
+            <div class="thresh-label">Low</div>
+            <input class="thresh-slider" type="range" id="t-low" min="-80" max="-5" step="1" value="-50">
+            <div class="thresh-val" id="tv-low">-50 dB</div>
+          </div>
+          <!-- medium -->
+          <div class="thresh-row">
+            <div class="thresh-dot" style="background:var(--c-medium)"></div>
+            <div class="thresh-label">Medium</div>
+            <input class="thresh-slider" type="range" id="t-medium" min="-80" max="-5" step="1" value="-30">
+            <div class="thresh-val" id="tv-medium">-30 dB</div>
+          </div>
+          <!-- high -->
+          <div class="thresh-row">
+            <div class="thresh-dot" style="background:var(--c-high)"></div>
+            <div class="thresh-label">High</div>
+            <input class="thresh-slider" type="range" id="t-high" min="-80" max="-5" step="1" value="-15">
+            <div class="thresh-val" id="tv-high">-15 dB</div>
+          </div>
         </div>
-        <div id="container"></div>
-        <script src="script.js"></script>
-    </body>
+      </div>
+
+      <!-- Hold duration -->
+      <div class="sec" style="margin-top:1.25rem;">Durée hold émotion</div>
+      <div class="card">
+        <div class="card-body">
+          <div class="hold-row">
+            <span style="font-size:0.78rem;color:var(--muted);">Durée minimale d'affichage d'une émotion après le silence</span>
+            <input class="hold-slider" type="range" id="hold-ms" min="200" max="5000" step="100" value="1500">
+            <div class="hold-val" id="hold-val">1500ms</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Frame speed -->
+      <div class="sec" style="margin-top:1.25rem;">Vitesse animation (ms/frame)</div>
+      <div class="card">
+        <div class="card-body">
+          <div class="speed-row">
+            <span style="font-size:0.78rem;color:var(--muted);">Intervalle entre chaque frame du flipbook</span>
+            <input class="speed-slider" type="range" id="frame-speed" min="50" max="1000" step="25" value="300">
+            <div class="speed-val" id="speed-val">300ms</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Live DB meter -->
+      <div class="sec" style="margin-top:1.25rem;">Niveaux audio en direct</div>
+      <div class="card">
+        <div class="card-body db-meter-wrap" id="db-meter">
+          <span style="font-size:0.75rem;color:var(--muted);">En attente du bot...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Emotions -->
+    <div>
+      <div class="sec">Émotions personnalisées</div>
+      <div class="card">
+        <div class="card-body" style="display:flex;flex-direction:column;gap:0.75rem;">
+          <div style="font-size:0.72rem;color:var(--muted);line-height:1.6;">
+            Chaque émotion se déclenche quand le niveau audio atteint son seuil minimum
+            et qu'une bande de fréquence domine les autres selon la sensibilité configurée.
+          </div>
+          <div class="emotion-list" id="emotion-list"></div>
+          <button class="add-emotion-btn" onclick="addEmotion()">+ Ajouter une émotion</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /audio-grid -->
+
+  <button class="save-btn" onclick="saveAudioConfig()">✓ Appliquer la config</button>
+
+</div><!-- /panel-audio -->
+
+<!-- ══ MODAL URL OBS ═════════════════════════════════════════════ -->
+<div class="overlay" id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <h2>Browser Source OBS</h2>
+    <p>Colle cette URL dans une <strong>Browser Source</strong> OBS.<br>Chaque streamer a ses propres images — rien n'est partagé.</p>
+    <div class="modal-url" id="modal-url">—</div>
+    <div class="modal-row">
+      <button class="obs-btn" onclick="copyUrl()">Copier</button>
+      <button class="obs-btn ghost" onclick="closeModal()">Fermer</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+// INDEXEDDB
+// ════════════════════════════════════════════════════════════════
+const DB_NAME = 'pngtuber';
+const DB_VER  = 2;
+let db;
+
+async function openDB() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = e => {
+      const d = e.target.result;
+      if (!d.objectStoreNames.contains('frames')) d.createObjectStore('frames');
+      if (!d.objectStoreNames.contains('meta'))   d.createObjectStore('meta');
+    };
+    req.onsuccess = e => { db = e.target.result; res(db); };
+    req.onerror   = rej;
+  });
+}
+
+const dbGet = (store, key)      => new Promise((res,rej) => { const r = db.transaction(store).objectStore(store).get(key); r.onsuccess=e=>res(e.target.result); r.onerror=rej; });
+const dbSet = (store, key, val) => new Promise((res,rej) => { const tx=db.transaction(store,'readwrite'); tx.objectStore(store).put(val,key); tx.oncomplete=res; tx.onerror=rej; });
+const dbDel = (store, key)      => new Promise((res,rej) => { const tx=db.transaction(store,'readwrite'); tx.objectStore(store).delete(key); tx.oncomplete=res; tx.onerror=rej; });
+
+// ════════════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════════════
+
+// Config audio locale (chaque streamer a la sienne)
+let audioConfig = {
+  thresholds:   { low: -50, medium: -30, high: -15 },
+  emotionHoldMs: 1500,
+  frameSpeed:    300,
+  emotions: [
+    { key: 'anger',  label: 'Anger',  minStatus: 'medium', dominantBand: 'low',  sensitivity: 1.2 },
+    { key: 'scream', label: 'Scream', minStatus: 'high',   dominantBand: 'high', sensitivity: 1.5 },
+  ],
+};
+
+// userId → { displayName, states: { stateKey → [frame,...] } }
+const configData = {};
+
+// Les états fixes + les émotions dynamiques
+function allStates() {
+  const fixed = ['silent','low','medium','high'];
+  const emo   = audioConfig.emotions.map(e => e.key);
+  return [...fixed, ...emo.filter(k => !fixed.includes(k))];
+}
+
+function stateColor(key) {
+  const map = { silent:'var(--c-silent)', low:'var(--c-low)', medium:'var(--c-medium)', high:'var(--c-high)', anger:'var(--c-anger)', scream:'var(--c-scream)' };
+  return map[key] || 'var(--muted)';
+}
+
+// ════════════════════════════════════════════════════════════════
+// TABS
+// ════════════════════════════════════════════════════════════════
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(`panel-${name}`).classList.add('active');
+}
+
+// ════════════════════════════════════════════════════════════════
+// API POLL
+// ════════════════════════════════════════════════════════════════
+function apiBase() { return `http://${document.getElementById('api-host').value.trim() || 'localhost:3000'}`; }
+
+async function pollApi() {
+  try {
+    const res  = await fetch(`${apiBase()}/levels`, { cache: 'no-store' });
+    if (!res.ok) throw 0;
+    const data = await res.json();
+    document.getElementById('api-dot').className = 'api-dot ok';
+
+    const ids = Object.keys(data).filter(k => k !== '_bot');
+    document.getElementById('empty-state').style.display = ids.length ? 'none' : 'block';
+
+    for (const uid of ids) {
+      const info = data[uid];
+      if (!configData[uid]) {
+        configData[uid] = { displayName: info.displayName || uid, states: {} };
+        for (const s of allStates()) configData[uid].states[s] = [];
+        configData[uid].states = await loadAllFrames(uid);
+        renderUser(uid);
+      }
+      // mise à jour speaking badge
+      const pill = document.getElementById(`pill-${uid}`);
+      if (pill) pill.className = 'speaking-pill' + (info.speaking ? ' on' : '');
+
+      // mise à jour DB meter
+      updateDbMeter(uid, info);
+    }
+  } catch {
+    document.getElementById('api-dot').className = 'api-dot err';
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// DB METER (live preview avec thresholds actuels)
+// ════════════════════════════════════════════════════════════════
+const meterRows = {};
+
+function updateDbMeter(uid, info) {
+  const meter = document.getElementById('db-meter');
+  if (!meterRows[uid]) {
+    // créer la ligne
+    const row = document.createElement('div');
+    row.className = 'db-user-row';
+    row.id = `meter-${uid}`;
+    row.innerHTML = `
+      <span class="db-name">${esc(info.displayName || uid)}</span>
+      <div class="db-bar-track"><div class="db-bar-fill" id="mbar-${uid}"></div></div>
+      <span class="db-val" id="mval-${uid}">— dB</span>
+      <span class="db-status" id="mstat-${uid}">—</span>
+    `;
+    meter.innerHTML = '';
+    meterRows[uid] = true;
+    meter.appendChild(row);
+  }
+
+  const db  = info.db ?? -100;
+  const pct = Math.max(0, Math.min(100, ((db + 100) / 100) * 100));
+  const bar  = document.getElementById(`mbar-${uid}`);
+  const val  = document.getElementById(`mval-${uid}`);
+  const stat = document.getElementById(`mstat-${uid}`);
+  if (!bar) return;
+
+  bar.style.width = pct + '%';
+  val.textContent = db.toFixed(1) + ' dB';
+
+  // Appliquer les thresholds locaux pour l'affichage
+  const t = audioConfig.thresholds;
+  let status = 'silent';
+  if (db >= t.low)    status = 'low';
+  if (db >= t.medium) status = 'medium';
+  if (db >= t.high)   status = 'high';
+
+  stat.textContent = status;
+  stat.style.color = stateColor(status);
+  bar.style.background = stateColor(status);
+}
+
+// ════════════════════════════════════════════════════════════════
+// AUDIO CONFIG UI
+// ════════════════════════════════════════════════════════════════
+function bindSlider(id, valId, suffix, onchange) {
+  const sl = document.getElementById(id);
+  const vl = document.getElementById(valId);
+  sl.addEventListener('input', () => { vl.textContent = sl.value + suffix; onchange(+sl.value); });
+}
+
+function renderEmotions() {
+  const list = document.getElementById('emotion-list');
+  list.innerHTML = '';
+  audioConfig.emotions.forEach((em, idx) => {
+    const card = document.createElement('div');
+    card.className = 'emotion-card';
+    card.innerHTML = `
+      <div class="emotion-card-head">
+        <span class="emotion-key" style="color:${stateColor(em.key)}">${esc(em.label)} <span style="opacity:0.5;font-size:0.7em;">(${esc(em.key)})</span></span>
+        <button class="emotion-del" title="Supprimer" onclick="removeEmotion(${idx})">✕</button>
+      </div>
+      <div class="emotion-fields">
+        <div class="field">
+          <label>Niveau minimum</label>
+          <select onchange="audioConfig.emotions[${idx}].minStatus=this.value">
+            ${['low','medium','high'].map(v=>`<option value="${v}"${em.minStatus===v?' selected':''}>${v}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label>Bande dominante</label>
+          <select onchange="audioConfig.emotions[${idx}].dominantBand=this.value">
+            ${['low','mid','high'].map(v=>`<option value="${v}"${em.dominantBand===v?' selected':''}>${v}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="sensitivity-row">
+        <span class="sens-label">Sensibilité</span>
+        <input class="sens-slider" type="range" min="1.0" max="4.0" step="0.1" value="${em.sensitivity}"
+          oninput="audioConfig.emotions[${idx}].sensitivity=+this.value; this.nextElementSibling.textContent='×'+this.value">
+        <span class="sens-val">×${em.sensitivity.toFixed(1)}</span>
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+function addEmotion() {
+  const key = prompt('Clé de l\'émotion (ex: surprise, fear) — minuscules, sans espace :');
+  if (!key || !/^[a-z_]+$/.test(key)) return toast('Clé invalide (minuscules uniquement)');
+  if (audioConfig.emotions.find(e => e.key === key)) return toast('Cette émotion existe déjà');
+  const label = prompt('Nom affiché :', key.charAt(0).toUpperCase() + key.slice(1)) || key;
+  audioConfig.emotions.push({ key, label, minStatus: 'medium', dominantBand: 'high', sensitivity: 1.5 });
+  renderEmotions();
+  // Ajouter le slot dans les panneaux avatar ouverts
+  for (const uid of Object.keys(configData)) {
+    if (!configData[uid].states[key]) configData[uid].states[key] = [];
+    addStateColToUser(uid, key, label);
+  }
+  toast(`Émotion "${label}" ajoutée`);
+}
+
+function removeEmotion(idx) {
+  if (!confirm('Supprimer cette émotion ?')) return;
+  const key = audioConfig.emotions[idx].key;
+  audioConfig.emotions.splice(idx, 1);
+  renderEmotions();
+  // Retirer les colonnes correspondantes dans l'UI avatar
+  document.querySelectorAll(`.state-col[data-state="${key}"]`).forEach(el => el.remove());
+  toast('Émotion supprimée');
+}
+
+async function saveAudioConfig() {
+  await dbSet('meta', 'audioConfig', audioConfig);
+  // Notifier le viewer via BroadcastChannel
+  try { new BroadcastChannel('pngtuber-config').postMessage({ type: 'audioConfig', data: audioConfig }); } catch {}
+  toast('✓ Config sauvegardée et appliquée');
+}
+
+// ════════════════════════════════════════════════════════════════
+// AVATAR PANEL
+// ════════════════════════════════════════════════════════════════
+function renderUser(uid) {
+  const data = configData[uid];
+  const cont = document.getElementById('users-container');
+  const init = (data.displayName || uid).slice(0,2).toUpperCase();
+
+  const block = document.createElement('div');
+  block.className = 'user-block';
+  block.id = `user-${uid}`;
+  block.innerHTML = `
+    <div class="user-head">
+      <div class="avatar-initials">${init}</div>
+      <div>
+        <div class="user-dname">${esc(data.displayName||uid)}</div>
+        <div class="user-uid">${esc(uid)}</div>
+      </div>
+      <span class="speaking-pill" id="pill-${uid}"></span>
+    </div>
+    <div class="states-grid" id="sgrid-${uid}"></div>
+  `;
+  cont.appendChild(block);
+
+  const grid = block.querySelector(`#sgrid-${uid}`);
+  for (const stateKey of allStates()) {
+    const col = buildStateCol(uid, stateKey, data.states[stateKey] || []);
+    grid.appendChild(col);
+  }
+}
+
+function addStateColToUser(uid, stateKey, label) {
+  const grid = document.getElementById(`sgrid-${uid}`);
+  if (!grid) return;
+  if (grid.querySelector(`.state-col[data-state="${stateKey}"]`)) return;
+  const col = buildStateCol(uid, stateKey, []);
+  grid.appendChild(col);
+}
+
+function buildStateCol(uid, stateKey, frames) {
+  const label = audioConfig.emotions.find(e=>e.key===stateKey)?.label || stateKey;
+  const col = document.createElement('div');
+  col.className = `state-col`;
+  col.dataset.state = stateKey;
+  col.style.borderTop = `2px solid ${stateColor(stateKey)}`;
+
+  col.innerHTML = `
+    <div class="state-col-title">
+      <div class="sdot" style="background:${stateColor(stateKey)}"></div>
+      ${esc(label.toUpperCase())}
+    </div>
+    <div class="frames-list" id="fl-${uid}-${stateKey}"></div>
+    <button class="add-frame-btn">
+      <input type="file" accept="image/*" multiple>
+      + frame(s)
+    </button>
+  `;
+
+  const list  = col.querySelector(`#fl-${uid}-${stateKey}`);
+  const addbtn = col.querySelector('.add-frame-btn');
+  const input  = col.querySelector('input[type=file]');
+
+  for (const f of frames) list.appendChild(buildFrameItem(uid, stateKey, f));
+
+  enableDrag(list, uid, stateKey);
+  addbtn.addEventListener('click', e => { if (e.target !== input) input.click(); });
+  input.addEventListener('change', e => handleUpload(uid, stateKey, e.target.files));
+
+  return col;
+}
+
+function buildFrameItem(uid, stateKey, frame) {
+  const item = document.createElement('div');
+  item.className = 'frame-item';
+  item.dataset.fid = frame.id;
+  item.draggable = true;
+  item.innerHTML = `
+    <span class="f-handle">⠿</span>
+    <img class="f-thumb" src="${frame.url}" alt="">
+    <span class="f-name">${esc(frame.name)}</span>
+    <button class="f-del" title="Supprimer">✕</button>
+  `;
+  item.querySelector('.f-del').addEventListener('click', async () => {
+    await dbDel('frames', `${uid}__${stateKey}__${frame.id}`);
+    configData[uid].states[stateKey] = configData[uid].states[stateKey].filter(f=>f.id!==frame.id);
+    await dbSet('meta', `order__${uid}__${stateKey}`, configData[uid].states[stateKey].map(f=>({id:f.id,name:f.name})));
+    item.remove();
+    toast('Frame supprimée');
+  });
+  return item;
+}
+
+function enableDrag(list, uid, stateKey) {
+  let dragged = null;
+  list.addEventListener('dragstart', e => { dragged = e.target.closest('.frame-item'); setTimeout(()=>dragged?.classList.add('dragging'),0); });
+  list.addEventListener('dragend',   () => { dragged?.classList.remove('dragging'); dragged=null; persistOrder(list,uid,stateKey); });
+  list.addEventListener('dragover',  e => {
+    e.preventDefault();
+    const over = e.target.closest('.frame-item');
+    if (!over||over===dragged) return;
+    list.querySelectorAll('.frame-item').forEach(i=>i.classList.remove('drag-over'));
+    over.classList.add('drag-over');
+    const items=[...list.querySelectorAll('.frame-item')];
+    if (items.indexOf(dragged)<items.indexOf(over)) list.insertBefore(dragged,over.nextSibling);
+    else list.insertBefore(dragged,over);
+  });
+  list.addEventListener('drop', e => { e.preventDefault(); list.querySelectorAll('.frame-item').forEach(i=>i.classList.remove('drag-over')); });
+}
+
+async function persistOrder(list, uid, stateKey) {
+  const items  = [...list.querySelectorAll('.frame-item')];
+  const frames = items.map(i => configData[uid].states[stateKey].find(f=>f.id===i.dataset.fid)).filter(Boolean);
+  configData[uid].states[stateKey] = frames;
+  await dbSet('meta', `order__${uid}__${stateKey}`, frames.map(f=>({id:f.id,name:f.name})));
+}
+
+async function handleUpload(uid, stateKey, files) {
+  const list = document.getElementById(`fl-${uid}-${stateKey}`);
+  for (const file of files) {
+    const id    = 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2,5);
+    const blob  = file;
+    const url   = URL.createObjectURL(blob);
+    const frame = { id, name: file.name, blob, url };
+    configData[uid].states[stateKey].push(frame);
+    await dbSet('frames', `${uid}__${stateKey}__${id}`, { blob, name: file.name });
+    list.appendChild(buildFrameItem(uid, stateKey, frame));
+  }
+  await dbSet('meta', `order__${uid}__${stateKey}`, configData[uid].states[stateKey].map(f=>({id:f.id,name:f.name})));
+  toast(`${files.length} frame(s) ajoutée(s)`);
+}
+
+// ════════════════════════════════════════════════════════════════
+// LOAD FRAMES FROM DB
+// ════════════════════════════════════════════════════════════════
+async function loadAllFrames(uid) {
+  const states = {};
+  for (const s of allStates()) {
+    const order = await dbGet('meta', `order__${uid}__${s}`) || [];
+    const frames = [];
+    for (const { id, name } of order) {
+      const data = await dbGet('frames', `${uid}__${s}__${id}`);
+      if (data?.blob) frames.push({ id, name, blob: data.blob, url: URL.createObjectURL(data.blob) });
+    }
+    states[s] = frames;
+  }
+  return states;
+}
+
+// ════════════════════════════════════════════════════════════════
+// OBS URL MODAL
+// ════════════════════════════════════════════════════════════════
+function viewerUrl() {
+  const host  = document.getElementById('api-host').value.trim() || 'localhost:3000';
+  const base  = location.href.replace('index.html','viewer.html').split('?')[0];
+  return `${base}?sourceUrl=http://${host}/levels`;
+}
+function openModal()  { document.getElementById('modal-url').textContent = viewerUrl(); document.getElementById('modal').classList.add('open'); }
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+function copyUrl()    { navigator.clipboard.writeText(viewerUrl()).then(()=>toast('URL copiée !')); }
+function openViewer() { window.open(viewerUrl(), '_blank'); }
+
+// ════════════════════════════════════════════════════════════════
+// UTILS
+// ════════════════════════════════════════════════════════════════
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+let _toastT;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(_toastT); _toastT = setTimeout(()=>el.classList.remove('show'), 2200);
+}
+
+// ════════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════════
+(async () => {
+  await openDB();
+
+  // Charger config audio sauvegardée
+  const savedCfg = await dbGet('meta', 'audioConfig');
+  if (savedCfg) audioConfig = savedCfg;
+
+  const savedHost = await dbGet('meta', 'apiHost');
+  if (savedHost) document.getElementById('api-host').value = savedHost;
+
+  document.getElementById('api-host').addEventListener('change', () =>
+    dbSet('meta', 'apiHost', document.getElementById('api-host').value)
+  );
+
+  // Bind sliders thresholds
+  ['low','medium','high'].forEach(k => {
+    const sl = document.getElementById(`t-${k}`);
+    const vl = document.getElementById(`tv-${k}`);
+    sl.value = audioConfig.thresholds[k];
+    vl.textContent = audioConfig.thresholds[k] + ' dB';
+    sl.addEventListener('input', () => {
+      audioConfig.thresholds[k] = +sl.value;
+      vl.textContent = sl.value + ' dB';
+    });
+  });
+
+  // Hold ms
+  const holdSl = document.getElementById('hold-ms');
+  holdSl.value = audioConfig.emotionHoldMs;
+  document.getElementById('hold-val').textContent = audioConfig.emotionHoldMs + 'ms';
+  holdSl.addEventListener('input', () => {
+    audioConfig.emotionHoldMs = +holdSl.value;
+    document.getElementById('hold-val').textContent = holdSl.value + 'ms';
+  });
+
+  // Frame speed
+  const speedSl = document.getElementById('frame-speed');
+  speedSl.value = audioConfig.frameSpeed || 300;
+  document.getElementById('speed-val').textContent = (audioConfig.frameSpeed || 300) + 'ms';
+  speedSl.addEventListener('input', () => {
+    audioConfig.frameSpeed = +speedSl.value;
+    document.getElementById('speed-val').textContent = speedSl.value + 'ms';
+  });
+
+  // Render emotions
+  renderEmotions();
+
+  // Poll API
+  await pollApi();
+  setInterval(pollApi, 1500);
+})();
+</script>
+</body>
 </html>

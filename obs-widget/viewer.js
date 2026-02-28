@@ -66,7 +66,6 @@ function getImagePath(userId, status, emotion) {
     const subdir = status === "high" && emotion ? emotion : status;
     return `${imagesBase}/user${userId}/${status}/${subdir}.png`;
 }
-
 /**
  * Résoudre les deux images pour l'animation de clignement (silent)
  * on.png: yeux ouverts
@@ -88,7 +87,7 @@ function getBlinkImagePaths(userId) {
 
 /**
  * Démarrer l'animation de clignement pour l'état "silent"
- * Alterne entre on.png (yeux ouverts) et off.png (yeux fermés) toutes les 300ms
+ * Alterne entre on.png (yeux ouverts) et off.png (yeux fermés) toutes les 850ms
  *
  * @param {HTMLImageElement} imgElement - Image element à animer
  * @param {string} userId - ID utilisateur
@@ -106,7 +105,7 @@ function startBlinkAnimation(imgElement, userId) {
     const intervalId = setInterval(() => {
         isOn = !isOn;
         imgElement.src = isOn ? paths.on : paths.off;
-    }, 300);
+    }, 850);
 
     return {
         intervalId,
