@@ -105,7 +105,7 @@ function startBlinkAnimation(imgElement, userId) {
     const intervalId = setInterval(() => {
         isOn = !isOn;
         imgElement.src = isOn ? paths.on : paths.off;
-    }, 3850);
+    }, 3500);
 
     return {
         intervalId,
