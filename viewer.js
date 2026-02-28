@@ -29,7 +29,7 @@ const sourceUrl =
     "http://localhost:3000/levels";
 const imagesBase =
     new URLSearchParams(location.search).get("imagesBase") || "./pnjtuber";
-const pollInterval = 200; // ms between API fetches
+const pollInterval = 80; // ms between API fetches
 
 const grid = document.getElementById("grid");
 
@@ -105,7 +105,7 @@ function startBlinkAnimation(imgElement, userId) {
     const intervalId = setInterval(() => {
         isOn = !isOn;
         imgElement.src = isOn ? paths.on : paths.off;
-    }, 850);
+    }, 3850);
 
     return {
         intervalId,
