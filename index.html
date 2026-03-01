@@ -4,281 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PNGTuber Config</title>
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap');
-
-:root {
-  --bg:      #0c0c10;
-  --bg2:     #13131a;
-  --bg3:     #1a1a24;
-  --border:  #252535;
-  --accent:  #5b4ff5;
-  --accent2: #00d9b8;
-  --danger:  #e74c6c;
-  --warn:    #f0a500;
-  --text:    #dde1f0;
-  --muted:   #5a5a7a;
-  --r:       8px;
-  --font:    'Outfit', sans-serif;
-  --mono:    'Fira Code', monospace;
-
-  /* état colors */
-  --c-silent: #3d4263;
-  --c-low:    #1a5fbf;
-  --c-medium: #b36b00;
-  --c-high:   #b81c3c;
-  --c-anger:  #c43a1a;
-  --c-scream: #8b1ac4;
-}
-
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html { height: 100%; }
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: var(--font);
-  font-size: 14px;
-  min-height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-/* ══ HEADER ══════════════════════════════════════════════════ */
-header {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.75rem 1.5rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg2);
-  position: sticky; top: 0; z-index: 100;
-  flex-wrap: wrap;
-}
-.logo { font-family: var(--mono); font-size: 0.95rem; color: var(--accent2); white-space: nowrap; }
-.logo em { color: var(--accent); font-style: normal; }
-
-.api-row {
-  display: flex; align-items: center; gap: 0.4rem;
-  background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 6px; padding: 0.3rem 0.7rem;
-}
-.api-row label { font-size: 0.68rem; color: var(--muted); font-family: var(--mono); }
-.api-input {
-  background: none; border: none; outline: none;
-  color: var(--accent2); font-family: var(--mono); font-size: 0.75rem; width: 170px;
-}
-.api-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
-.api-dot.ok  { background: var(--accent2); box-shadow: 0 0 6px var(--accent2); }
-.api-dot.err { background: var(--danger); }
-
-.hflex { display: flex; align-items: center; gap: 0.5rem; }
-.ml    { margin-left: auto; }
-
-.obs-btn {
-  padding: 0.35rem 0.9rem;
-  background: var(--accent); color: #fff;
-  border: none; border-radius: 6px;
-  font-family: var(--font); font-size: 0.78rem; font-weight: 600;
-  cursor: pointer; transition: opacity 0.15s; white-space: nowrap;
-}
-.obs-btn:hover { opacity: 0.85; }
-.obs-btn.ghost { background: var(--bg3); color: var(--muted); border: 1px solid var(--border); }
-
-/* ══ TABS ════════════════════════════════════════════════════ */
-.tabs-bar {
-  display: flex; gap: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg2);
-  padding: 0 1.5rem;
-}
-.tab-btn {
-  padding: 0.6rem 1.2rem;
-  background: none; border: none;
-  color: var(--muted); font-family: var(--font); font-size: 0.85rem; font-weight: 500;
-  cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
-  transition: color 0.15s;
-}
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--accent2); border-bottom-color: var(--accent2); }
-
-/* ══ PANELS ══════════════════════════════════════════════════ */
-.panel { display: none; flex: 1; padding: 1.5rem; flex-direction: column; gap: 1.5rem; max-width: 1100px; width: 100%; margin: 0 auto; }
-.panel.active { display: flex; }
-
-/* ══ SECTION TITLE ═══════════════════════════════════════════ */
-.sec { font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); margin-bottom: 0.75rem; }
-
-/* ══ CARD ════════════════════════════════════════════════════ */
-.card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
-.card-head {
-  display: flex; align-items: center; gap: 0.6rem;
-  padding: 0.6rem 1rem; border-bottom: 1px solid var(--border);
-  background: var(--bg3); font-size: 0.85rem; font-weight: 600;
-}
-.card-body { padding: 0.75rem; }
-
-/* ══ AVATAR PANEL ════════════════════════════════════════════ */
-.empty-state { text-align: center; padding: 3rem 2rem; color: var(--muted); }
-.empty-state .icon { font-size: 2.5rem; margin-bottom: 0.75rem; }
-.empty-state p { font-size: 0.85rem; line-height: 1.7; }
-.empty-state code { font-family: var(--mono); background: var(--bg3); padding: 0.1rem 0.35rem; border-radius: 3px; color: var(--accent2); }
-
-.user-block { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
-.user-head {
-  display: flex; align-items: center; gap: 0.6rem;
-  padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); background: var(--bg3);
-}
-.avatar-initials {
-  width: 30px; height: 30px; border-radius: 50%;
-  background: var(--accent); display: flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 0.8rem; color: #fff; flex-shrink: 0;
-}
-.user-dname { font-weight: 600; font-size: 0.9rem; }
-.user-uid   { font-family: var(--mono); font-size: 0.6rem; color: var(--muted); }
-.speaking-pill {
-  margin-left: auto; font-size: 0.62rem; padding: 0.15rem 0.5rem;
-  border-radius: 20px; background: rgba(0,217,184,0.1); border: 1px solid rgba(0,217,184,0.25);
-  color: var(--accent2); display: none;
-}
-.speaking-pill.on { display: block; }
-
-.states-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px,1fr)); gap: 1px; background: var(--border); }
-.state-col { background: var(--bg2); padding: 0.65rem; display: flex; flex-direction: column; gap: 0.4rem; }
-.state-col-title { display: flex; align-items: center; gap: 0.35rem; font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; }
-.sdot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-
-/* frames */
-.frames-list { display: flex; flex-direction: column; gap: 3px; min-height: 30px; }
-.frame-item {
-  display: flex; align-items: center; gap: 5px;
-  background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 4px; padding: 3px 5px;
-  cursor: grab; user-select: none; transition: border-color 0.1s;
-}
-.frame-item:active { cursor: grabbing; }
-.frame-item.dragging { opacity: 0.35; }
-.frame-item.drag-over { border-color: var(--accent2); }
-.f-handle { color: var(--muted); font-size: 0.7rem; flex-shrink: 0; }
-.f-thumb  { width: 22px; height: 22px; object-fit: cover; border-radius: 2px; flex-shrink: 0; }
-.f-name   { flex: 1; font-size: 0.6rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.f-del    { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 0.7rem; padding: 1px 2px; }
-.f-del:hover { color: var(--danger); }
-
-.add-frame-btn {
-  display: flex; align-items: center; justify-content: center; gap: 3px;
-  padding: 4px; background: none; border: 1px dashed var(--border);
-  border-radius: 4px; color: var(--muted); font-size: 0.65rem; font-family: var(--font);
-  cursor: pointer; transition: border-color 0.15s, color 0.15s;
-}
-.add-frame-btn:hover { border-color: var(--accent2); color: var(--accent2); }
-.add-frame-btn input { display: none; }
-
-/* ══ AUDIO CONFIG PANEL ══════════════════════════════════════ */
-.audio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-@media (max-width: 640px) { .audio-grid { grid-template-columns: 1fr; } }
-
-/* threshold sliders */
-.thresh-row {
-  display: flex; align-items: center; gap: 0.75rem;
-  padding: 0.5rem 0; border-bottom: 1px solid var(--border);
-}
-.thresh-row:last-child { border-bottom: none; }
-.thresh-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.thresh-label { width: 60px; font-size: 0.8rem; font-weight: 500; }
-.thresh-slider { flex: 1; accent-color: var(--accent); }
-.thresh-val { font-family: var(--mono); font-size: 0.75rem; width: 54px; text-align: right; color: var(--accent2); }
-
-/* hold duration */
-.hold-row { display: flex; align-items: center; gap: 0.75rem; }
-.hold-slider { flex: 1; accent-color: var(--accent); }
-.hold-val { font-family: var(--mono); font-size: 0.78rem; color: var(--accent2); width: 54px; text-align: right; }
-
-/* frame speed */
-.speed-row { display: flex; align-items: center; gap: 0.75rem; }
-.speed-slider { flex: 1; accent-color: var(--accent); }
-.speed-val { font-family: var(--mono); font-size: 0.78rem; color: var(--accent2); width: 54px; text-align: right; }
-
-/* emotions */
-.emotion-list { display: flex; flex-direction: column; gap: 0.75rem; }
-
-.emotion-card {
-  background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 6px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.6rem;
-}
-.emotion-card-head { display: flex; align-items: center; gap: 0.5rem; }
-.emotion-key { font-family: var(--mono); font-size: 0.8rem; font-weight: 500; flex: 1; }
-.emotion-del { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 0.8rem; }
-.emotion-del:hover { color: var(--danger); }
-
-.emotion-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
-.field { display: flex; flex-direction: column; gap: 0.25rem; }
-.field label { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
-.field select, .field input[type=text] {
-  background: var(--bg2); border: 1px solid var(--border);
-  color: var(--text); font-family: var(--font); font-size: 0.78rem;
-  padding: 0.3rem 0.5rem; border-radius: 4px; outline: none;
-  transition: border-color 0.15s;
-}
-.field select:focus, .field input:focus { border-color: var(--accent2); }
-
-.sensitivity-row { display: flex; align-items: center; gap: 0.5rem; }
-.sens-label { font-size: 0.65rem; color: var(--muted); }
-.sens-slider { flex: 1; accent-color: var(--accent); }
-.sens-val { font-family: var(--mono); font-size: 0.72rem; color: var(--accent2); width: 32px; text-align: right; }
-
-.add-emotion-btn {
-  display: flex; align-items: center; justify-content: center; gap: 0.4rem;
-  padding: 0.5rem; background: none; border: 1px dashed var(--border);
-  border-radius: 6px; color: var(--muted); font-family: var(--font); font-size: 0.78rem;
-  cursor: pointer; transition: border-color 0.15s, color 0.15s; width: 100%;
-}
-.add-emotion-btn:hover { border-color: var(--accent2); color: var(--accent2); }
-
-.save-btn {
-  padding: 0.6rem 1.5rem; background: var(--accent2); color: #000;
-  border: none; border-radius: 6px; font-family: var(--font); font-size: 0.85rem;
-  font-weight: 700; cursor: pointer; transition: opacity 0.15s; align-self: flex-start;
-}
-.save-btn:hover { opacity: 0.85; }
-
-/* db meter (live preview) */
-.db-meter-wrap { display: flex; flex-direction: column; gap: 0.75rem; }
-.db-user-row { display: flex; align-items: center; gap: 0.6rem; font-size: 0.75rem; }
-.db-name { width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-.db-bar-track { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; position: relative; }
-.db-bar-fill { height: 100%; background: var(--accent2); border-radius: 3px; transition: width 0.1s linear; min-width: 2px; }
-.db-val { font-family: var(--mono); font-size: 0.68rem; color: var(--accent2); width: 54px; text-align: right; }
-.db-status { font-size: 0.62rem; padding: 0.1rem 0.35rem; border-radius: 10px; background: var(--bg3); border: 1px solid var(--border); white-space: nowrap; }
-
-/* ══ MODAL URL OBS ════════════════════════════════════════════ */
-.overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 200; }
-.overlay.open { display: flex; }
-.modal { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--r); padding: 1.5rem; max-width: 500px; width: 90%; display: flex; flex-direction: column; gap: 1rem; }
-.modal h2 { font-size: 1rem; font-weight: 600; }
-.modal p { font-size: 0.78rem; color: var(--muted); line-height: 1.65; }
-.modal-url { font-family: var(--mono); font-size: 0.7rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 5px; padding: 0.6rem 0.8rem; color: var(--accent2); word-break: break-all; user-select: all; }
-.modal-row { display: flex; gap: 0.5rem; }
-
-/* ══ TOAST ════════════════════════════════════════════════════ */
-#toast {
-  position: fixed; bottom: 1.2rem; left: 50%;
-  transform: translateX(-50%) translateY(8px);
-  background: var(--bg3); border: 1px solid var(--border);
-  padding: 0.45rem 1.1rem; border-radius: 20px;
-  font-size: 0.75rem; color: var(--accent2);
-  opacity: 0; transition: opacity 0.2s, transform 0.2s;
-  pointer-events: none; z-index: 999; white-space: nowrap;
-}
-#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-
-::-webkit-scrollbar { width: 5px; }
-::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-
-.perm-row { display:flex; align-items:center; gap:0.5rem; font-size:0.78rem; padding:0.25rem 0; }
-.perm-badge { font-size:0.6rem; font-weight:700; padding:0.15rem 0.4rem; border-radius:4px; background:rgba(91,79,245,0.2); color:var(--accent); border:1px solid rgba(91,79,245,0.3); white-space:nowrap; flex-shrink:0; }
-.perm-badge.intent { background:rgba(240,165,0,0.15); color:var(--warn); border-color:rgba(240,165,0,0.3); }
-</style>
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
@@ -317,35 +43,26 @@ header {
 <!-- ══ PANEL: AUDIO CONFIG ══════════════════════════════════════ -->
 <div class="panel" id="panel-audio">
 
+  <!-- Sélecteur de user -->
+  <div style="display:flex;align-items:center;gap:0.75rem;padding:0.6rem 0.85rem;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);max-width:520px;">
+    <span style="font-size:0.75rem;color:var(--muted);white-space:nowrap;">🎙 Utilisateur</span>
+    <select id="audio-user-select" onchange="onAudioUserChange(this.value)"
+      style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:0.8rem;padding:0.3rem 0.5rem;border-radius:5px;cursor:pointer;">
+      <option value="">— Sélectionner un utilisateur —</option>
+    </select>
+    <span id="audio-save-indicator" title="" style="font-size:0.65rem;color:var(--muted);"></span>
+  </div>
+
   <div class="audio-grid">
 
-    <!-- Thresholds -->
+    <!-- Thresholds dynamiques -->
     <div>
-      <div class="sec">Seuils audio (dB)</div>
+      <div style="display:flex;align-items:center;margin-bottom:0.4rem;">
+        <span class="sec" style="margin-bottom:0;">Seuils audio (dB)</span>
+        <button onclick="addThreshold()" style="margin-left:auto;background:var(--accent);border:none;color:#fff;font-size:0.7rem;font-weight:700;padding:0.2rem 0.6rem;border-radius:4px;cursor:pointer;font-family:var(--font);">+ Seuil</button>
+      </div>
       <div class="card">
-        <div class="card-body" style="display:flex;flex-direction:column;gap:0;">
-          <!-- low -->
-          <div class="thresh-row">
-            <div class="thresh-dot" style="background:var(--c-low)"></div>
-            <div class="thresh-label">Low</div>
-            <input class="thresh-slider" type="range" id="t-low" min="-80" max="-5" step="1" value="-50">
-            <div class="thresh-val" id="tv-low">-50 dB</div>
-          </div>
-          <!-- medium -->
-          <div class="thresh-row">
-            <div class="thresh-dot" style="background:var(--c-medium)"></div>
-            <div class="thresh-label">Medium</div>
-            <input class="thresh-slider" type="range" id="t-medium" min="-80" max="-5" step="1" value="-30">
-            <div class="thresh-val" id="tv-medium">-30 dB</div>
-          </div>
-          <!-- high -->
-          <div class="thresh-row">
-            <div class="thresh-dot" style="background:var(--c-high)"></div>
-            <div class="thresh-label">High</div>
-            <input class="thresh-slider" type="range" id="t-high" min="-80" max="-5" step="1" value="-15">
-            <div class="thresh-val" id="tv-high">-15 dB</div>
-          </div>
-        </div>
+        <div class="card-body" style="display:flex;flex-direction:column;gap:0;" id="thresh-list"></div>
       </div>
 
       <!-- Hold duration -->
@@ -433,7 +150,7 @@ header {
       <div id="token-feedback" style="font-size:0.75rem;display:none;padding:0.5rem 0.75rem;border-radius:6px;"></div>
       <div style="display:flex;gap:0.5rem;">
         <button class="save-btn" onclick="saveToken()" id="save-token-btn">Vérifier et sauvegarder</button>
-        <button class="obs-btn ghost" onclick="cancelTokenForm()" style="font-size:0.78rem;">Annuler</button>
+        <button class="obs-btn ghost" id="cancel-token-btn" onclick="cancelTokenForm()" style="font-size:0.78rem;display:none;">Annuler</button>
       </div>
     </div>
   </div>
@@ -492,35 +209,53 @@ header {
 // ════════════════════════════════════════════════════════════════
 
 let audioConfig = {
-  thresholds:   { low: -50, medium: -30, high: -15 },
+  thresholds: [
+    { key:'low',    label:'Low',    db:-55, color:'#4a90e2' },
+    { key:'medium', label:'Medium', db:-35, color:'#f0a500' },
+    { key:'high',   label:'High',   db:-15, color:'#e74c6c' },
+  ],
   emotionHoldMs: 800,
   frameSpeed:    150,
   emotions: [
-    { key: 'anger',  label: 'Anger',  minStatus: 'medium', dominantBand: 'low',  sensitivity: 1.2 },
-    { key: 'scream', label: 'Scream', minStatus: 'high',   dominantBand: 'high', sensitivity: 1.5 },
+    { key:'anger',  label:'Anger',  minStatus:'medium', freqMin:80,  freqMax:300, sensitivity:1.2 },
+    { key:'scream', label:'Scream', minStatus:'high',   freqMin:800, freqMax:4000, sensitivity:1.5 },
   ],
 };
 
 // userId → { displayName, states: { stateKey → [{file, url},...] } }
 const configData = {};
 
-const AUDIO_STATES = ['silent','low','medium','high'];
-
-function allStates() {
-  const withClosed = AUDIO_STATES.flatMap(s => [s, s+'_closed']);
-  const emotions   = audioConfig.emotions.map(e=>e.key).filter(k=>!AUDIO_STATES.includes(k));
-  return [...withClosed, ...emotions];
+// AUDIO_STATES dérivé des seuils : silent + chaque seuil trié par db
+function getAudioStates() {
+  return ['silent', ...[...audioConfig.thresholds].sort((a,b)=>a.db-b.db).map(t=>t.key)];
+}
+function getFallbackChain() {
+  const s=[...audioConfig.thresholds].sort((a,b)=>a.db-b.db).map(t=>t.key);
+  const c={silent:null};
+  s.forEach((k,i)=>{ c[k]= i===0?'silent':s[i-1]; });
+  return c;
 }
 
-function isClosedState(key) { return key.endsWith('_closed'); }
-function baseState(key)     { return key.replace('_closed',''); }
-function closedState(key)   { return key+'_closed'; }
-function isEmotion(key)     { return !AUDIO_STATES.includes(key) && !isClosedState(key); }
+function allStates() {
+  const audio    = getAudioStates().flatMap(s=>[s, s+'_closed']);
+  const emotions = audioConfig.emotions.flatMap(e=>[e.key, e.key+'_silent']);
+  return [...audio, ...emotions];
+}
+
+function isClosedState(key)   { return key.endsWith('_closed'); }
+function isEmotionSilent(key) { return key.endsWith('_silent') && !getAudioStates().includes(key.replace(/_silent$/,'')); }
+function baseState(key)       { return key.replace(/_closed$|_silent$/,''); }
+function isAudioState(key)    { return getAudioStates().includes(key); }
+function isEmotion(key)       { return !isAudioState(key) && !isClosedState(key) && !isEmotionSilent(key); }
 
 function stateColor(key) {
   const base = baseState(key);
-  const map  = { silent:'var(--c-silent)', low:'var(--c-low)', medium:'var(--c-medium)', high:'var(--c-high)', anger:'var(--c-anger)', scream:'var(--c-scream)' };
-  return map[base] || map[key] || 'var(--muted)';
+  const t    = audioConfig.thresholds.find(t=>t.key===base);
+  if (t) return t.color;
+  if (base==='silent') return 'var(--c-silent)';
+  const em = audioConfig.emotions.find(e=>e.key===base);
+  if (em?.color) return em.color;
+  return 'var(--accent)';
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -553,6 +288,8 @@ async function pollApi() {
         configData[uid] = { displayName: info.displayName || uid, states: {} };
         configData[uid].states = await loadFramesFromServer(uid);
         renderUser(uid);
+        saveKnownUser(uid, info.displayName || uid);
+        populateUserSelect(currentAudioUserId); // nouveau user → rafraîchir le select
       }
       const pill = document.getElementById(`pill-${uid}`);
       if (pill) pill.className = 'speaking-pill' + (info.speaking ? ' on' : '');
@@ -615,10 +352,168 @@ async function saveOrderToServer(uid, stateKey, frames) {
 }
 
 // Sauvegarder audioConfig dans localStorage (local au streamer)
+// ════════════════════════════════════════════════════════════════
+// CONFIG AUDIO PAR USER
+// ════════════════════════════════════════════════════════════════
+let currentAudioUserId = null; // user actuellement édité dans le panel audio
+
+const DEFAULT_AUDIO_CONFIG = () => ({
+  thresholds: [
+    { key:'low',    label:'Low',    db:-55, color:'#4a90e2' },
+    { key:'medium', label:'Medium', db:-35, color:'#f0a500' },
+    { key:'high',   label:'High',   db:-15, color:'#e74c6c' },
+  ],
+  emotionHoldMs: 800,
+  frameSpeed:    150,
+  emotions: [
+    { key:'anger',  label:'Anger',  minStatus:'medium', freqMin:80,  freqMax:300,  sensitivity:1.2 },
+    { key:'scream', label:'Scream', minStatus:'high',   freqMin:800, freqMax:4000, sensitivity:1.5 },
+  ],
+});
+
+// Indicateur de sauvegarde
+function setAudioSaveIndicator(state) {
+  const el = document.getElementById('audio-save-indicator');
+  if (!el) return;
+  if (state === 'saved')   { el.textContent = '✓ sauvegardé';  el.style.color = 'var(--accent2)'; }
+  if (state === 'unsaved') { el.textContent = '● non sauvegardé'; el.style.color = 'var(--warn)'; }
+  if (state === 'none')    { el.textContent = ''; }
+}
+
+// Remplir le select avec les users connus (bot + localStorage)
+async function populateUserSelect(selectVal) {
+  const sel = document.getElementById('audio-user-select');
+  const prev = selectVal || sel.value;
+  // Vider sauf option vide
+  sel.innerHTML = '<option value="">— Sélectionner un utilisateur —</option>';
+
+  const users = new Map(); // uid → displayName
+
+  // 1. Users connus localement
+  try {
+    const known = JSON.parse(localStorage.getItem('pngtuber-knownUsers') || '{}');
+    for (const [uid, info] of Object.entries(known)) users.set(uid, info.displayName || uid);
+  } catch {}
+
+  // 2. Users connus côté bot
+  try {
+    const res = await fetch(`${apiBase()}/known-users`, { cache:'no-store' });
+    if (res.ok) {
+      const list = await res.json();
+      for (const u of list) users.set(u.userId, u.displayName || u.userId);
+    }
+  } catch {}
+
+  // 3. Users actifs en ce moment
+  for (const uid of Object.keys(configData)) {
+    users.set(uid, configData[uid].displayName || uid);
+  }
+
+  for (const [uid, name] of users) {
+    const opt = document.createElement('option');
+    opt.value = uid; opt.textContent = name + (uid !== name ? ` (${uid.slice(0,8)}…)` : '');
+    sel.appendChild(opt);
+  }
+
+  if (prev && [...users.keys()].includes(prev)) sel.value = prev;
+}
+
+// Charger la config audio d'un user depuis le bot
+async function loadUserAudioConfig(userId) {
+  if (!userId) {
+    audioConfig = DEFAULT_AUDIO_CONFIG();
+    applyAudioConfigToUI();
+    setAudioSaveIndicator('none');
+    return;
+  }
+  try {
+    const res  = await fetch(`${apiBase()}/user-config/${userId}`, { cache:'no-store' });
+    const data = res.ok ? await res.json() : {};
+    audioConfig = mergeWithDefaults(data);
+    applyAudioConfigToUI();
+    setAudioSaveIndicator(res.ok && Object.keys(data).length ? 'saved' : 'none');
+  } catch {
+    // Fallback localStorage
+    try {
+      const local = JSON.parse(localStorage.getItem(`pngtuber-audioConfig-${userId}`) || 'null');
+      audioConfig = mergeWithDefaults(local || {});
+    } catch { audioConfig = DEFAULT_AUDIO_CONFIG(); }
+    applyAudioConfigToUI();
+    setAudioSaveIndicator('none');
+  }
+}
+
+function mergeWithDefaults(data) {
+  const def = DEFAULT_AUDIO_CONFIG();
+  const cfg  = { ...def, ...data };
+  // Migration format objet → tableau
+  if (cfg.thresholds && !Array.isArray(cfg.thresholds)) {
+    const o = cfg.thresholds;
+    cfg.thresholds = [
+      { key:'low',    label:'Low',    db: o.low    ?? -55, color:'#4a90e2' },
+      { key:'medium', label:'Medium', db: o.medium ?? -35, color:'#f0a500' },
+      { key:'high',   label:'High',   db: o.high   ?? -15, color:'#e74c6c' },
+    ];
+  }
+  // Migration dominantBand → freqMin/freqMax
+  cfg.emotions.forEach(em => {
+    if (em.dominantBand && !em.freqMin) {
+      const map = { low:{min:80,max:300}, mid:{min:300,max:2000}, high:{min:2000,max:8000} };
+      const r = map[em.dominantBand] || {min:80,max:4000};
+      em.freqMin = r.min; em.freqMax = r.max;
+      delete em.dominantBand;
+    }
+  });
+  return cfg;
+}
+
+// Appliquer audioConfig aux sliders/UI
+function applyAudioConfigToUI() {
+  renderThresholds();
+  renderEmotions();
+  const holdSl  = document.getElementById('hold-ms');
+  const speedSl = document.getElementById('frame-speed');
+  if (holdSl)  { holdSl.value  = audioConfig.emotionHoldMs;    document.getElementById('hold-val').textContent  = audioConfig.emotionHoldMs+'ms'; }
+  if (speedSl) { speedSl.value = audioConfig.frameSpeed||150;  document.getElementById('speed-val').textContent = (audioConfig.frameSpeed||150)+'ms'; }
+}
+
+async function onAudioUserChange(uid) {
+  if (currentAudioUserId && uid !== currentAudioUserId) {
+    // Auto-save avant de changer
+    if (currentAudioUserId) await saveUserAudioConfig(currentAudioUserId, false);
+  }
+  currentAudioUserId = uid || null;
+  if (currentAudioUserId) localStorage.setItem('pngtuber-lastAudioUser', currentAudioUserId);
+  else localStorage.removeItem('pngtuber-lastAudioUser');
+  await loadUserAudioConfig(currentAudioUserId);
+}
+
+// Sauvegarder la config audio d'un user
+async function saveUserAudioConfig(userId, showToast=true) {
+  if (!userId) return;
+  const cfg = { ...audioConfig, displayName: configData[userId]?.displayName || userId };
+  // Sauvegarder côté bot
+  try {
+    await fetch(`${apiBase()}/user-config/${userId}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(cfg),
+    });
+    setAudioSaveIndicator('saved');
+  } catch {
+    // Fallback localStorage
+    localStorage.setItem(`pngtuber-audioConfig-${userId}`, JSON.stringify(cfg));
+    setAudioSaveIndicator('saved');
+  }
+  // BroadcastChannel pour le viewer
+  try { new BroadcastChannel('pngtuber-config').postMessage({ type:'audioConfig', userId, data: cfg }); } catch {}
+  if (showToast) toast('✓ Config sauvegardée pour ' + (cfg.displayName || userId));
+}
+
+// Compatibilité : saveAudioConfigLocal utilisé dans addThreshold, removeThreshold, etc.
 function saveAudioConfigLocal() {
-  localStorage.setItem('pngtuber-audioConfig', JSON.stringify(audioConfig));
-  localStorage.setItem('pngtuber-apiHost', document.getElementById('api-host').value);
-  try { new BroadcastChannel('pngtuber-config').postMessage({ type: 'audioConfig', data: audioConfig }); } catch {}
+  setAudioSaveIndicator('unsaved');
+  // Auto-save si user sélectionné
+  if (currentAudioUserId) saveUserAudioConfig(currentAudioUserId, false);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -648,51 +543,250 @@ function updateDbMeter(uid, info) {
   if (!bar) return;
   bar.style.width = pct + '%';
   val.textContent = db.toFixed(1) + ' dB';
-  const t = audioConfig.thresholds;
+  const sorted = [...audioConfig.thresholds].sort((a,b)=>a.db-b.db);
   let status = 'silent';
-  if (db >= t.low)    status = 'low';
-  if (db >= t.medium) status = 'medium';
-  if (db >= t.high)   status = 'high';
+  for (const t of sorted) { if (db >= t.db) status = t.key; }
   stat.textContent = status;
   stat.style.color = stateColor(status);
   bar.style.background = stateColor(status);
 }
 
 // ════════════════════════════════════════════════════════════════
-// AUDIO CONFIG UI
+// SEUILS AUDIO DYNAMIQUES
 // ════════════════════════════════════════════════════════════════
+const THRESH_PALETTE = ['#4a90e2','#f0a500','#e74c6c','#9b59b6','#2ecc71','#1abc9c','#e67e22','#00d9b8'];
+
+function renderThresholds() {
+  const list = document.getElementById('thresh-list');
+  if (!list) return;
+  list.innerHTML = '';
+  audioConfig.thresholds.sort((a,b)=>a.db-b.db);
+  audioConfig.thresholds.forEach((t, idx) => {
+    const row = document.createElement('div');
+    row.className = 'thresh-row';
+    row.innerHTML = `
+      <div class="thresh-dot" style="background:${t.color};cursor:pointer;" title="Couleur suivante"
+           onclick="cycleThreshColor(${idx})"></div>
+      <input value="${esc(t.label)}" maxlength="14"
+        style="width:74px;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:0.72rem;padding:0.15rem 0.4rem;border-radius:4px;font-family:var(--font);"
+        oninput="audioConfig.thresholds[${idx}].label=this.value; audioConfig.thresholds[${idx}].key=slugKey(this.value)||audioConfig.thresholds[${idx}].key; updateAudioStates();">
+      <input class="thresh-slider" type="range" min="-80" max="-5" step="1" value="${t.db}"
+        oninput="audioConfig.thresholds[${idx}].db=+this.value; this.nextElementSibling.textContent=this.value+' dB'; updateAudioStates();">
+      <div class="thresh-val">${t.db} dB</div>
+      <button onclick="removeThreshold(${idx})" title="Supprimer"
+        style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.75rem;padding:2px 5px;border-radius:3px;"
+        ${audioConfig.thresholds.length<=1?'disabled style="opacity:0.3;cursor:default;"':''}>✕</button>
+    `;
+    list.appendChild(row);
+  });
+}
+
+function cycleThreshColor(idx) {
+  const cur = THRESH_PALETTE.indexOf(audioConfig.thresholds[idx].color);
+  audioConfig.thresholds[idx].color = THRESH_PALETTE[(cur+1)%THRESH_PALETTE.length];
+  renderThresholds();
+}
+
+function slugKey(str) {
+  return str.toLowerCase().trim().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'') || null;
+}
+
+function addThreshold() {
+  const dbs = audioConfig.thresholds.map(t=>t.db);
+  let db = -25;
+  while (dbs.includes(db) && db > -75) db -= 5;
+  const idx   = audioConfig.thresholds.length % THRESH_PALETTE.length;
+  const label = `Level ${audioConfig.thresholds.length+1}`;
+  audioConfig.thresholds.push({ key: slugKey(label)||`level_${Date.now()}`, label, db, color: THRESH_PALETTE[idx] });
+  renderThresholds();
+  updateAudioStates();
+  saveAudioConfigLocal();
+}
+
+function removeThreshold(idx) {
+  if (audioConfig.thresholds.length <= 1) return;
+  if (!confirm(`Supprimer le seuil "${audioConfig.thresholds[idx].label}" ?`)) return;
+  const key = audioConfig.thresholds[idx].key;
+  audioConfig.thresholds.splice(idx, 1);
+  renderThresholds();
+  updateAudioStates();
+  saveAudioConfigLocal();
+  // Retirer les colonnes de tous les users
+  document.querySelectorAll(`.state-col[data-state="${key}"], .state-col[data-state="${key}_closed"]`)
+    .forEach(el => el.closest('.state-group')?.remove());
+}
+
+function updateAudioStates() {
+  // Reconstruire les grilles de tous les users avec les nouveaux états
+  for (const uid of Object.keys(configData)) rebuildUserGrid(uid);
+}
+
+// ════════════════════════════════════════════════════════════════
+// ÉMOTIONS — avec plage de fréquence par slider double + config par user
+// ════════════════════════════════════════════════════════════════
+
+// userEmotionConfig[uid][emKey] = { freqMin, freqMax, sensitivity, minStatus }
+// Stocké dans localStorage clé 'pngtuber-userEmotions'
+const userEmotionConfig = {};
+
+function loadUserEmotionConfigs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('pngtuber-userEmotions') || '{}');
+    Object.assign(userEmotionConfig, saved);
+  } catch {}
+}
+
+function saveUserEmotionConfigs() {
+  localStorage.setItem('pngtuber-userEmotions', JSON.stringify(userEmotionConfig));
+}
+
+function getUserEmotion(uid, emKey) {
+  // Override user > config globale
+  return userEmotionConfig[uid]?.[emKey] || null;
+}
+
+function setUserEmotion(uid, emKey, field, value) {
+  if (!userEmotionConfig[uid]) userEmotionConfig[uid] = {};
+  if (!userEmotionConfig[uid][emKey]) {
+    const base = audioConfig.emotions.find(e=>e.key===emKey);
+    userEmotionConfig[uid][emKey] = base ? { ...base } : {};
+  }
+  userEmotionConfig[uid][emKey][field] = value;
+  saveUserEmotionConfigs();
+}
+
 function renderEmotions() {
   const list = document.getElementById('emotion-list');
   list.innerHTML = '';
   audioConfig.emotions.forEach((em, idx) => {
     const card = document.createElement('div');
     card.className = 'emotion-card';
+    const stateOptions = getAudioStates().filter(s=>s!=='silent')
+      .map(s=>`<option value="${s}"${em.minStatus===s?' selected':''}>${s}</option>`).join('');
     card.innerHTML = `
       <div class="emotion-card-head">
-        <span class="emotion-key" style="color:${stateColor(em.key)}">${esc(em.label)} <span style="opacity:0.5;font-size:0.7em;">(${esc(em.key)})</span></span>
+        <span class="emotion-key" style="color:${stateColor(em.key)}">${esc(em.label)}
+          <span style="opacity:0.5;font-size:0.7em;">(${esc(em.key)})</span></span>
         <button class="emotion-del" title="Supprimer" onclick="removeEmotion(${idx})">✕</button>
       </div>
       <div class="emotion-fields">
         <div class="field"><label>Niveau minimum</label>
-          <select onchange="audioConfig.emotions[${idx}].minStatus=this.value">
-            ${['low','medium','high'].map(v=>`<option value="${v}"${em.minStatus===v?' selected':''}>${v}</option>`).join('')}
-          </select>
+          <select onchange="audioConfig.emotions[${idx}].minStatus=this.value">${stateOptions}</select>
         </div>
-        <div class="field"><label>Bande dominante</label>
-          <select onchange="audioConfig.emotions[${idx}].dominantBand=this.value">
-            ${['low','mid','high'].map(v=>`<option value="${v}"${em.dominantBand===v?' selected':''}>${v}</option>`).join('')}
-          </select>
+        <div class="field"><label>Sensibilité</label>
+          <input type="range" min="1" max="4" step="0.1" value="${em.sensitivity}"
+            style="width:80px;accent-color:var(--accent);"
+            oninput="audioConfig.emotions[${idx}].sensitivity=+this.value; this.nextElementSibling.textContent='×'+parseFloat(this.value).toFixed(1)">
+          <span style="font-family:var(--mono);font-size:0.7rem;color:var(--accent2);">×${em.sensitivity.toFixed(1)}</span>
         </div>
       </div>
-      <div class="sensitivity-row">
-        <span class="sens-label">Sensibilité</span>
-        <input class="sens-slider" type="range" min="1.0" max="4.0" step="0.1" value="${em.sensitivity}"
-          oninput="audioConfig.emotions[${idx}].sensitivity=+this.value; this.nextElementSibling.textContent='×'+this.value">
-        <span class="sens-val">×${em.sensitivity.toFixed(1)}</span>
+      <div class="field" style="margin-top:0.4rem;">
+        <label>Plage de fréquence (Hz) <span style="font-family:var(--mono);color:var(--accent2);" id="freq-range-lbl-${em.key}">${em.freqMin}–${em.freqMax} Hz</span></label>
+        <div id="freq-slider-${em.key}" class="dual-range-wrap" data-min="${em.freqMin}" data-max="${em.freqMax}" data-em="${idx}"></div>
       </div>
     `;
     list.appendChild(card);
+    buildDualRange(
+      document.getElementById(`freq-slider-${em.key}`),
+      20, 8000, em.freqMin, em.freqMax,
+      (lo, hi) => {
+        audioConfig.emotions[idx].freqMin = lo;
+        audioConfig.emotions[idx].freqMax = hi;
+        document.getElementById(`freq-range-lbl-${em.key}`).textContent = `${lo}–${hi} Hz`;
+      }
+    );
   });
+}
+
+// Slider double (range dual) — deux inputs type=range superposés
+function buildDualRange(container, absMin, absMax, valMin, valMax, onChange) {
+  const THUMB_R = 7;
+  container.style.cssText = 'position:relative;height:32px;display:flex;align-items:center;user-select:none;';
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'position:relative;width:100%;height:4px;margin:0 '+THUMB_R+'px;';
+
+  const trackBg = document.createElement('div');
+  trackBg.style.cssText = 'position:absolute;inset:0;background:var(--border);border-radius:2px;';
+
+  const fill = document.createElement('div');
+  fill.style.cssText = 'position:absolute;top:0;height:100%;background:var(--accent);border-radius:2px;';
+
+  const makeThumb = () => {
+    const t = document.createElement('div');
+    t.style.cssText = `position:absolute;top:50%;width:${THUMB_R*2}px;height:${THUMB_R*2}px;
+      background:var(--accent2);border:2px solid var(--bg2);border-radius:50%;
+      transform:translate(-50%,-50%);cursor:grab;z-index:2;transition:box-shadow 0.1s;`;
+    t.addEventListener('mouseenter', () => { if (!t._drag) t.style.boxShadow='0 0 0 4px rgba(0,217,184,0.25)'; });
+    t.addEventListener('mouseleave', () => { if (!t._drag) t.style.boxShadow=''; });
+    return t;
+  };
+
+  const tLo = makeThumb();
+  const tHi = makeThumb();
+
+  let lo = Math.max(absMin, Math.min(absMax, valMin));
+  let hi = Math.max(absMin, Math.min(absMax, valMax));
+
+  const pct = v => (v - absMin) / (absMax - absMin);
+  const snap = p => Math.round((absMin + Math.max(0,Math.min(1,p)) * (absMax - absMin)) / 10) * 10;
+
+  function render() {
+    tLo.style.left = (pct(lo)*100) + '%';
+    tHi.style.left = (pct(hi)*100) + '%';
+    fill.style.left  = (pct(lo)*100) + '%';
+    fill.style.width = ((pct(hi)-pct(lo))*100) + '%';
+  }
+
+  function startDrag(thumb, isLo) {
+    thumb._drag = true;
+    thumb.style.cursor = 'grabbing';
+    thumb.style.boxShadow = '0 0 0 5px rgba(0,217,184,0.35)';
+    thumb.style.zIndex = '3';
+    const onMove = e => {
+      const rect = wrap.getBoundingClientRect();
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      const v  = snap((cx - rect.left) / rect.width);
+      if (isLo) lo = Math.min(v, hi); else hi = Math.max(v, lo);
+      render(); onChange(lo, hi);
+    };
+    const onUp = () => {
+      thumb._drag = false;
+      thumb.style.cursor = 'grab';
+      thumb.style.boxShadow = '';
+      thumb.style.zIndex = '2';
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup',   onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend',  onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup',   onUp);
+    window.addEventListener('touchmove', onMove, { passive:true });
+    window.addEventListener('touchend',  onUp);
+  }
+
+  tLo.addEventListener('mousedown',  e => { e.preventDefault(); e.stopPropagation(); startDrag(tLo, true);  });
+  tHi.addEventListener('mousedown',  e => { e.preventDefault(); e.stopPropagation(); startDrag(tHi, false); });
+  tLo.addEventListener('touchstart', e => { e.stopPropagation(); startDrag(tLo, true);  }, { passive:true });
+  tHi.addEventListener('touchstart', e => { e.stopPropagation(); startDrag(tHi, false); }, { passive:true });
+
+  wrap.addEventListener('mousedown', e => {
+    if (e.target === tLo || e.target === tHi) return;
+    const rect = wrap.getBoundingClientRect();
+    const v    = snap((e.clientX - rect.left) / rect.width);
+    const useLo = Math.abs(v - lo) <= Math.abs(v - hi);
+    if (useLo) lo = Math.min(v, hi); else hi = Math.max(v, lo);
+    render(); onChange(lo, hi);
+    startDrag(useLo ? tLo : tHi, useLo);
+  });
+
+  wrap.appendChild(trackBg);
+  wrap.appendChild(fill);
+  wrap.appendChild(tLo);
+  wrap.appendChild(tHi);
+  container.appendChild(wrap);
+  render();
 }
 
 function addEmotion() {
@@ -700,11 +794,12 @@ function addEmotion() {
   if (!key || !/^[a-z_]+$/.test(key)) return toast('Clé invalide');
   if (audioConfig.emotions.find(e=>e.key===key)) return toast('Émotion déjà existante');
   const label = prompt('Nom affiché :', key.charAt(0).toUpperCase()+key.slice(1)) || key;
-  audioConfig.emotions.push({ key, label, minStatus:'medium', dominantBand:'high', sensitivity:1.5 });
+  audioConfig.emotions.push({ key, label, minStatus: getAudioStates()[1]||'low', freqMin:80, freqMax:4000, sensitivity:1.5 });
   renderEmotions();
   for (const uid of Object.keys(configData)) {
-    if (!configData[uid].states[key]) configData[uid].states[key] = [];
-    addStateColToUser(uid, key, label);
+    if (!configData[uid].states[key])        configData[uid].states[key]        = [];
+    if (!configData[uid].states[key+'_silent']) configData[uid].states[key+'_silent'] = [];
+    rebuildUserGrid(uid);
   }
   toast(`Émotion "${label}" ajoutée`);
 }
@@ -714,13 +809,60 @@ function removeEmotion(idx) {
   const key = audioConfig.emotions[idx].key;
   audioConfig.emotions.splice(idx, 1);
   renderEmotions();
-  document.querySelectorAll(`.state-col[data-state="${key}"]`).forEach(el=>el.remove());
+  document.querySelectorAll(`.state-col[data-state="${key}"], .state-col[data-state="${key}_silent"]`)
+    .forEach(el => el.closest('.state-group')?.remove());
   toast('Émotion supprimée');
 }
 
+// ════════════════════════════════════════════════════════════════
+// PERSISTANCE USERS OFFLINE (tâche C)
+// Les users vus en session sont sauvegardés localement en JSON
+// Ils apparaissent dans l'UI même si le bot est déconnecté
+// ════════════════════════════════════════════════════════════════
+const USERS_KEY = 'pngtuber-knownUsers';
+
+function loadKnownUsers() {
+  try { return JSON.parse(localStorage.getItem(USERS_KEY) || '{}'); } catch { return {}; }
+}
+
+function saveKnownUser(uid, displayName) {
+  const known = loadKnownUsers();
+  if (!known[uid]) {
+    known[uid] = { displayName, seenAt: Date.now() };
+    localStorage.setItem(USERS_KEY, JSON.stringify(known));
+  } else if (known[uid].displayName !== displayName) {
+    known[uid].displayName = displayName;
+    localStorage.setItem(USERS_KEY, JSON.stringify(known));
+  }
+}
+
+function renderKnownUsersOffline() {
+  const known = loadKnownUsers();
+  for (const [uid, info] of Object.entries(known)) {
+    if (configData[uid]) continue; // déjà rendu par le bot live
+    configData[uid] = { displayName: info.displayName||uid, states: {} };
+    renderUser(uid);
+    loadFramesForUser(uid);
+  }
+}
+
+async function loadFramesForUser(uid) {
+  try {
+    const res  = await fetch(`${apiBase()}/frames/${uid}`, { cache:'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    for (const [state, frames] of Object.entries(data)) {
+      if (!configData[uid]) configData[uid] = { displayName: uid, states:{} };
+      configData[uid].states[state] = frames;
+      const fl = document.getElementById(`fl-${uid}-${state}`);
+      if (fl) { fl.innerHTML=''; frames.forEach(f => fl.appendChild(buildFrameItem(uid, state, f))); }
+    }
+  } catch {}
+}
+
 async function saveAudioConfig() {
-  saveAudioConfigLocal();
-  toast('✓ Config sauvegardée et appliquée');
+  if (!currentAudioUserId) return toast('Sélectionne un utilisateur d'abord.');
+  await saveUserAudioConfig(currentAudioUserId, true);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -776,15 +918,66 @@ function renderUser(uid) {
     <div class="states-grid" id="sgrid-${uid}"></div>
   `;
   cont.appendChild(block);
-  const grid = block.querySelector(`#sgrid-${uid}`);
+  rebuildUserGrid(uid);
+}
 
-  // Afficher les états audio groupés open+closed côte à côte, puis les émotions
-  for (const s of AUDIO_STATES) {
-    grid.appendChild(buildStateCol(uid, s,           data.states[s]||[]));
-    grid.appendChild(buildStateCol(uid, s+'_closed', data.states[s+'_closed']||[]));
+function rebuildUserGrid(uid) {
+  const data = configData[uid];
+  if (!data) return;
+  const grid = document.getElementById(`sgrid-${uid}`);
+  if (!grid) return;
+  grid.innerHTML = '';
+
+  // ── Section niveaux audio : grille 2 lignes × N colonnes ───────
+  // Ligne 1 = open, Ligne 2 = closed, Colonnes = seuils (silent, low, medium, high, ...)
+  const audioStates = getAudioStates();
+
+  const audioSection = document.createElement('div');
+  audioSection.className = 'states-row';
+  audioSection.innerHTML = '<div class="states-row-label">🔊 Niveaux audio</div>';
+
+  // Grille CSS : autant de colonnes que d'états audio
+  const audioGrid = document.createElement('div');
+  audioGrid.style.cssText = `display:grid;grid-template-columns:repeat(${audioStates.length},1fr);grid-template-rows:auto auto;gap:1px;background:var(--border);`;
+
+  // Ligne 1 — open (toutes les colonnes d'abord)
+  for (const s of audioStates) {
+    if (!data.states[s]) data.states[s] = [];
+    audioGrid.appendChild(buildStateCol(uid, s, data.states[s]));
   }
-  for (const em of audioConfig.emotions) {
-    grid.appendChild(buildStateCol(uid, em.key, data.states[em.key]||[]));
+  // Ligne 2 — closed (dans le même ordre)
+  for (const s of audioStates) {
+    const k = s + '_closed';
+    if (!data.states[k]) data.states[k] = [];
+    audioGrid.appendChild(buildStateCol(uid, k, data.states[k]));
+  }
+
+  audioSection.appendChild(audioGrid);
+  grid.appendChild(audioSection);
+
+  // ── Section émotions : même principe, 2 lignes × N émotions ────
+  if (audioConfig.emotions.length > 0) {
+    const emSection = document.createElement('div');
+    emSection.className = 'states-row';
+    emSection.innerHTML = '<div class="states-row-label">💬 Expressions</div>';
+
+    const emGrid = document.createElement('div');
+    emGrid.style.cssText = `display:grid;grid-template-columns:repeat(${audioConfig.emotions.length},1fr);grid-template-rows:auto auto;gap:1px;background:var(--border);`;
+
+    // Ligne 1 — état actif (parole)
+    for (const em of audioConfig.emotions) {
+      if (!data.states[em.key]) data.states[em.key] = [];
+      emGrid.appendChild(buildStateCol(uid, em.key, data.states[em.key]));
+    }
+    // Ligne 2 — état silent post-hold
+    for (const em of audioConfig.emotions) {
+      const k = em.key + '_silent';
+      if (!data.states[k]) data.states[k] = [];
+      emGrid.appendChild(buildStateCol(uid, k, data.states[k]));
+    }
+
+    emSection.appendChild(emGrid);
+    grid.appendChild(emSection);
   }
 }
 
@@ -795,13 +988,15 @@ function addStateColToUser(uid, stateKey, label) {
 }
 
 function buildStateCol(uid, stateKey, frames) {
-  const isClosed = isClosedState(stateKey);
-  const base     = baseState(stateKey);
-  const emLabel  = audioConfig.emotions.find(e=>e.key===stateKey)?.label;
-  const label    = isClosed
-    ? (base.charAt(0).toUpperCase()+base.slice(1)) + ' 👁 Closed'
-    : (emLabel || stateKey.charAt(0).toUpperCase()+stateKey.slice(1));
-  const borderStyle = isClosed
+  const isClosed      = isClosedState(stateKey);
+  const isEmSilent    = isEmotionSilent(stateKey);
+  const base          = baseState(stateKey);
+  const emLabel       = audioConfig.emotions.find(e=>e.key===base||e.key===stateKey)?.label;
+  let label;
+  if (isClosed)        label = (emLabel||base).toUpperCase() + ' 👁';
+  else if (isEmSilent) label = (emLabel||base).toUpperCase() + ' (silence)';
+  else                 label = emLabel || (stateKey.charAt(0).toUpperCase()+stateKey.slice(1));
+  const borderStyle = (isClosed||isEmSilent)
     ? `2px dashed ${stateColor(stateKey)}`
     : `2px solid ${stateColor(stateKey)}`;
   const col = document.createElement('div');
@@ -812,9 +1007,8 @@ function buildStateCol(uid, stateKey, frames) {
     <div class="state-col-title">
       <div class="sdot" style="background:${stateColor(stateKey)};${isClosed?'border:1px solid var(--border);':''}" ></div>
       <span style="${isClosed?'font-style:italic;font-size:0.6rem;':''}">${esc(label.toUpperCase())}</span>
-      ${!isClosed ? `<button title="Régler la position des frames" onclick="openPositioner('${uid}','${stateKey}')"
-        style="margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.7rem;padding:1px 3px;border-radius:3px;"
-        onmouseover="this.style.color='var(--accent2)'" onmouseout="this.style.color='var(--muted)'">📐</button>` : ''}
+      ${!isClosed ? `<button class="pos-btn" data-uid="${uid}" data-state="${stateKey}" title="Régler la position des frames"
+        style="margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.7rem;padding:1px 3px;border-radius:3px;">📐</button>` : ''}
     </div>
     <div class="frames-list" id="fl-${uid}-${stateKey}"></div>
     <button class="add-frame-btn">
@@ -831,6 +1025,13 @@ function buildStateCol(uid, stateKey, frames) {
   input.addEventListener('change', e => handleUpload(uid, stateKey, e.target.files));
   return col;
 }
+
+// Délégation d'événement pour les boutons 📐 (évite les conflits de guillemets dans les templates)
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.pos-btn');
+  if (!btn) return;
+  openPositioner(btn.dataset.uid, btn.dataset.state);
+});
 
 function buildFrameItem(uid, stateKey, frame) {
   const item = document.createElement('div');
@@ -925,37 +1126,36 @@ function toast(msg) {
 // INIT
 // ════════════════════════════════════════════════════════════════
 (async () => {
-  // Charger config depuis localStorage (local au streamer)
-  const savedCfg  = localStorage.getItem('pngtuber-audioConfig');
   const savedHost = localStorage.getItem('pngtuber-apiHost');
-  if (savedCfg)  audioConfig = JSON.parse(savedCfg);
   if (savedHost) document.getElementById('api-host').value = savedHost;
-
   document.getElementById('api-host').addEventListener('change', () =>
     localStorage.setItem('pngtuber-apiHost', document.getElementById('api-host').value)
   );
 
-  // Sliders thresholds
-  ['low','medium','high'].forEach(k => {
-    const sl=document.getElementById(`t-${k}`), vl=document.getElementById(`tv-${k}`);
-    sl.value=audioConfig.thresholds[k]; vl.textContent=audioConfig.thresholds[k]+' dB';
-    sl.addEventListener('input',()=>{ audioConfig.thresholds[k]=+sl.value; vl.textContent=sl.value+' dB'; });
+  // Sliders hold/speed — liés à audioConfig courant, mis à jour par applyAudioConfigToUI()
+  document.getElementById('hold-ms').addEventListener('input', function() {
+    audioConfig.emotionHoldMs = +this.value;
+    document.getElementById('hold-val').textContent = this.value + 'ms';
+    setAudioSaveIndicator('unsaved');
+  });
+  document.getElementById('frame-speed').addEventListener('input', function() {
+    audioConfig.frameSpeed = +this.value;
+    document.getElementById('speed-val').textContent = this.value + 'ms';
+    setAudioSaveIndicator('unsaved');
   });
 
-  // Hold ms
-  const holdSl=document.getElementById('hold-ms');
-  holdSl.value=audioConfig.emotionHoldMs;
-  document.getElementById('hold-val').textContent=audioConfig.emotionHoldMs+'ms';
-  holdSl.addEventListener('input',()=>{ audioConfig.emotionHoldMs=+holdSl.value; document.getElementById('hold-val').textContent=holdSl.value+'ms'; });
-
-  // Frame speed
-  const speedSl=document.getElementById('frame-speed');
-  speedSl.value=audioConfig.frameSpeed||150;
-  document.getElementById('speed-val').textContent=(audioConfig.frameSpeed||150)+'ms';
-  speedSl.addEventListener('input',()=>{ audioConfig.frameSpeed=+speedSl.value; document.getElementById('speed-val').textContent=speedSl.value+'ms'; });
-
   loadBlinkConfigs();
-  renderEmotions();
+  loadUserEmotionConfigs();
+  renderKnownUsersOffline();
+  await populateUserSelect();
+
+  // Sélectionner automatiquement le dernier user édité si disponible
+  const lastUser = localStorage.getItem('pngtuber-lastAudioUser');
+  if (lastUser) {
+    document.getElementById('audio-user-select').value = lastUser;
+    await onAudioUserChange(lastUser);
+  }
+
   await pollApi();
   setInterval(pollApi, 800);
 
@@ -963,47 +1163,82 @@ function toast(msg) {
 // BOT SETUP
 // ════════════════════════════════════════════════════════════════
 
-async function loadBotStatus() {
-  try {
-    const res  = await fetch(`${apiBase()}/bot-info`, { cache: "no-store" });
-    const data = await res.json();
-    const dot   = document.getElementById("bot-config-dot");
-    const label = document.getElementById("bot-config-label");
-    const changBtn = document.getElementById("change-token-btn");
+// ════════════════════════════════════════════════════════════════
+// BOT SETUP — source de vérité : .env via /bot-info
+// Deux états possibles : token absent → form + msg "Aucun token"
+//                        token présent mais invalide → form + msg "Token invalide"
+// ════════════════════════════════════════════════════════════════
 
-    if (data.connected) {
-      dot.className = "api-dot ok";
-      label.innerHTML = `Connecté — <strong style="color:var(--accent2)">${esc(data.tag)}</strong>`;
-      changBtn.style.display = "block";
-      // Afficher URL invitation
-      if (data.id) {
-        const perms = "3145728"; // Connect + Speak + View Channel + Send Messages + Read History
-        document.getElementById("invite-url").innerHTML =
-          `<a href="https://discord.com/oauth2/authorize?client_id=${data.id}&permissions=${perms}&scope=bot" target="_blank" style="color:var(--accent2)">https://discord.com/oauth2/authorize?client_id=${data.id}&permissions=${perms}&scope=bot</a>`;
-      }
-    } else if (data.configured) {
-      dot.className = "api-dot err";
-      label.textContent = "Token configuré mais bot non connecté — relancer le bot";
-      changBtn.style.display = "block";
-    } else {
-      dot.className = "api-dot";
-      label.textContent = "Aucun token configuré";
-      showTokenForm();
-    }
-  } catch {
-    document.getElementById("bot-config-label").textContent = "Impossible de contacter le bot";
-  }
+function setStatus(dotClass, msg, color) {
+  document.getElementById("bot-config-dot").className = "api-dot " + (dotClass || "");
+  const lbl = document.getElementById("bot-config-label");
+  lbl.innerHTML = msg;
+  lbl.style.color = color || "";
 }
 
-function showTokenForm() {
+function showForm(feedbackMsg, feedbackOk, canCancel) {
   document.getElementById("token-form").style.display = "block";
+  // Bouton Annuler uniquement si token valide existe (cas "changer le token")
+  document.getElementById("cancel-token-btn").style.display = canCancel ? "inline-block" : "none";
+  if (feedbackMsg !== undefined) showFeedback(feedbackMsg, feedbackOk);
+}
+
+function hideForm() {
+  document.getElementById("token-form").style.display = "none";
   document.getElementById("token-input").value = "";
   hideFeedback();
 }
 
-function cancelTokenForm() {
-  document.getElementById("token-form").style.display = "none";
+async function loadBotStatus() {
+  try {
+    const res  = await fetch(`${apiBase()}/bot-info`, { cache: "no-store" });
+    const data = await res.json();
+
+    if (data.connected) {
+      // ✅ Token valide + bot connecté à Discord
+      setStatus("ok", `Connecté — <strong style="color:var(--accent2)">${esc(data.tag)}</strong>`);
+      document.getElementById("change-token-btn").style.display = "block";
+      hideForm();
+      if (data.id) {
+        const perms = "3145728";
+        document.getElementById("invite-url").innerHTML =
+          `<a href="https://discord.com/oauth2/authorize?client_id=${data.id}&permissions=${perms}&scope=bot"
+            target="_blank" style="color:var(--accent2)">
+            discord.com/oauth2/authorize?client_id=${data.id}&permissions=${perms}&scope=bot
+          </a>`;
+      }
+
+    } else if (data.configured) {
+      // ⚠️ Token dans .env mais bot non connecté à Discord (non démarré ou erreur réseau Discord)
+      setStatus("err", "Token présent — bot non connecté à Discord", "var(--muted)");
+      document.getElementById("change-token-btn").style.display = "block";
+      hideForm();
+
+    } else if (data.tokenInvalid) {
+      // ❌ Token présent dans .env mais rejeté par Discord
+      setStatus("err", "Token invalide", "var(--danger)");
+      document.getElementById("change-token-btn").style.display = "none";
+      showForm("⚠ Le token enregistré a été rejeté par Discord. Saisis-en un nouveau.", false, false);
+
+    } else {
+      // ❌ Aucun token dans .env
+      setStatus("", "Aucun token configuré");
+      document.getElementById("change-token-btn").style.display = "none";
+      showForm("Aucun token Discord configuré. Saisis le token de ton bot pour démarrer.", false, false);
+    }
+
+  } catch {
+    // Bot non joignable (pas encore démarré)
+    setStatus("err", "Bot non joignable", "var(--muted)");
+    // Ne pas afficher le form — l'utilisateur n'a peut-être juste pas démarré le bot
+    hideForm();
+  }
 }
+
+// Bouton "Changer le token" — ouvre le form avec possibilité d'annuler
+function showTokenForm() { showForm(undefined, undefined, true); }
+
+function cancelTokenForm() { hideForm(); }
 
 function toggleTokenVisibility() {
   const input = document.getElementById("token-input");
@@ -1017,8 +1252,8 @@ function showFeedback(msg, ok) {
   el.textContent = msg;
   el.style.display = "block";
   el.style.background = ok ? "rgba(0,217,184,0.1)" : "rgba(231,76,108,0.1)";
-  el.style.color = ok ? "var(--accent2)" : "var(--danger)";
-  el.style.border = ok ? "1px solid rgba(0,217,184,0.3)" : "1px solid rgba(231,76,108,0.3)";
+  el.style.color      = ok ? "var(--accent2)"       : "var(--danger)";
+  el.style.border     = ok ? "1px solid rgba(0,217,184,0.3)" : "1px solid rgba(231,76,108,0.3)";
 }
 
 function hideFeedback() {
@@ -1027,11 +1262,11 @@ function hideFeedback() {
 
 async function saveToken() {
   const token = document.getElementById("token-input").value.trim();
-  if (!token) return showFeedback("Entre un token.", false);
+  if (!token) return showFeedback("Saisis un token.", false);
 
   const btn = document.getElementById("save-token-btn");
   btn.textContent = "Vérification...";
-  btn.disabled = true;
+  btn.disabled    = true;
   hideFeedback();
 
   try {
@@ -1044,18 +1279,15 @@ async function saveToken() {
 
     if (data.ok) {
       showFeedback(`✓ Token valide — ${data.tag}. Le bot redémarre...`, true);
-      document.getElementById("token-input").value = "";
-      document.getElementById("token-form").style.display = "none";
-      // Recharger le statut après redémarrage
-      setTimeout(loadBotStatus, 2500);
+      setTimeout(() => { hideForm(); loadBotStatus(); }, 2500);
     } else {
       showFeedback(`✗ ${data.error}`, false);
     }
-  } catch(err) {
-    showFeedback(`Erreur réseau : ${err.message}`, false);
+  } catch {
+    showFeedback("Bot non joignable. Vérifie qu'il est bien démarré.", false);
   } finally {
     btn.textContent = "Vérifier et sauvegarder";
-    btn.disabled = false;
+    btn.disabled    = false;
   }
 }
 

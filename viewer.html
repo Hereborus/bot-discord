@@ -3,36 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>PNGTuber Viewer</title>
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { background: transparent; width: 100%; height: 100%; overflow: hidden; }
-#stage {
-  width: 100%; height: 100%;
-  display: flex; flex-wrap: wrap;
-  align-content: flex-start;
-  gap: 8px; padding: 8px;
-}
-.avatar {
-  position: relative;
-  width: var(--avatar-size, 200px);
-  height: var(--avatar-size, 200px);
-}
-.avatar-frame {
-  position: absolute; inset: 0;
-  width: 100%; height: 100%;
-  object-fit: contain; display: block;
-  opacity: 0; transition: opacity 0.06s;
-  transform-origin: center center;
-}
-.avatar-frame.vis { opacity: 1; }
-#err {
-  position: fixed; top: 8px; left: 8px;
-  background: rgba(220,38,38,0.85); color: #fff;
-  font: 11px/1.5 monospace; padding: 5px 9px;
-  border-radius: 4px; display: none; max-width: 320px;
-}
-#err.on { display: block; }
-</style>
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div id="stage"></div>
@@ -54,36 +25,66 @@ document.documentElement.style.setProperty('--avatar-size', AVATAR_SIZE);
 // ════════════════════════════════════════════════════════════════
 // ÉTATS + FALLBACK
 // ════════════════════════════════════════════════════════════════
-const AUDIO_STATES   = ['silent','low','medium','high'];
-const FALLBACK_CHAIN = { high:'medium', medium:'low', low:'silent', silent:null };
-
+function getAudioStates() {
+  return ['silent', ...[...audioConfig.thresholds].sort((a,b)=>a.db-b.db).map(t=>t.key)];
+}
+function getFallbackChain() {
+  const s=[...audioConfig.thresholds].sort((a,b)=>a.db-b.db).map(t=>t.key);
+  const c={silent:null}; s.forEach((k,i)=>{ c[k]=i===0?'silent':s[i-1]; }); return c;
+}
 function isClosedState(key) { return key.endsWith('_closed'); }
-function baseState(key)     { return key.replace('_closed',''); }
+function baseState(key)     { return key.replace(/_closed$|_silent$/,''); }
 function closedVariant(key) { return key+'_closed'; }
-function isAudioState(key)  { return AUDIO_STATES.includes(key); }
+function isAudioState(key)  { return getAudioStates().includes(key); }
 
 // ════════════════════════════════════════════════════════════════
 // CONFIG AUDIO + BLINK (localStorage)
 // ════════════════════════════════════════════════════════════════
 let audioConfig = {
-  thresholds:    { low:-50, medium:-30, high:-15 },
+  thresholds: [
+    { key:'low',    label:'Low',    db:-55, color:'#4a90e2' },
+    { key:'medium', label:'Medium', db:-35, color:'#f0a500' },
+    { key:'high',   label:'High',   db:-15, color:'#e74c6c' },
+  ],
   emotionHoldMs: 800, frameSpeed: 150,
   emotions: [
-    { key:'anger',  label:'Anger',  minStatus:'medium', dominantBand:'low',  sensitivity:1.2 },
-    { key:'scream', label:'Scream', minStatus:'high',   dominantBand:'high', sensitivity:1.5 },
+    { key:'anger',  label:'Anger',  minStatus:'medium', freqMin:80,  freqMax:300,  sensitivity:1.2 },
+    { key:'scream', label:'Scream', minStatus:'high',   freqMin:800, freqMax:4000, sensitivity:1.5 },
   ],
 };
 const blinkConfig = {};
 
-function loadConfigs() {
-  try { const a=localStorage.getItem('pngtuber-audioConfig'); if(a) audioConfig=JSON.parse(a); } catch {}
+async function loadConfigs() {
+  // Charger la config depuis le bot pour ce userId spécifique
+  const params = new URLSearchParams(location.search);
+  const uid    = params.get('userId');
+  if (uid) {
+    try {
+      const port = params.get('port') || '3000';
+      const res  = await fetch(`http://localhost:${port}/user-config/${uid}`, { cache:'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Object.keys(data).length) { audioConfig = { ...audioConfig, ...data }; }
+      }
+    } catch {}
+  }
+  // Fallback localStorage (rétrocompat)
+  try { const a=localStorage.getItem(`pngtuber-audioConfig-${uid}`) || localStorage.getItem('pngtuber-audioConfig'); if(a) { const p=JSON.parse(a); audioConfig={...audioConfig,...p}; } } catch {}
   try { Object.assign(blinkConfig, JSON.parse(localStorage.getItem('pngtuber-blinkConfig')||'{}')); } catch {}
 }
 
 try {
   const bc = new BroadcastChannel('pngtuber-config');
   bc.onmessage = e => {
-    if (e.data?.type==='audioConfig') { audioConfig=e.data.data; Object.keys(frameCache).forEach(k=>delete frameCache[k]); }
+    if (e.data?.type==='audioConfig') {
+      const params = new URLSearchParams(location.search);
+      const myUid  = params.get('userId');
+      // Appliquer si pas de userId ciblé ou si c'est notre userId
+      if (!e.data.userId || e.data.userId === myUid) {
+        audioConfig = { ...audioConfig, ...e.data.data };
+        Object.keys(frameCache).forEach(k=>delete frameCache[k]);
+      }
+    }
     if (e.data?.type==='blinkConfig') { const {uid,freqMs}=e.data; blinkConfig[uid]={freqMs}; resetBlinkTimer(uid); }
   };
 } catch {}
@@ -114,21 +115,33 @@ try {
 // CLASSIFICATION
 // ════════════════════════════════════════════════════════════════
 function classifyStatus(db) {
-  const t=audioConfig.thresholds;
-  if (db>=t.high)   return 'high';
-  if (db>=t.medium) return 'medium';
-  if (db>=t.low)    return 'low';
-  return 'silent';
+  const sorted=[...audioConfig.thresholds].sort((a,b)=>a.db-b.db);
+  let s='silent';
+  for (const t of sorted) { if (db>=t.db) s=t.key; }
+  return s;
 }
 
 function detectEmotion(status, freq) {
   if (!freq||status==='silent') return null;
-  const levels=['silent','low','medium','high'];
+  const states = getAudioStates();
   for (const em of audioConfig.emotions) {
-    if (levels.indexOf(status)<levels.indexOf(em.minStatus)) continue;
-    const dom=freq[em.dominantBand]??0;
-    const others=Object.entries(freq).filter(([k])=>k!==em.dominantBand).map(([,v])=>v);
-    if (others.every(v=>dom>v*em.sensitivity)) return em.key;
+    if (states.indexOf(status) < states.indexOf(em.minStatus)) continue;
+    // Calculer l'énergie dans la plage freqMin–freqMax
+    // freq est un objet { low, mid, high } → on fait une correspondance approximative
+    // low ≈ 0–300Hz, mid ≈ 300–2000Hz, high ≈ 2000–8000Hz
+    const bandEnergy = (fMin, fMax) => {
+      let e = 0;
+      if (fMax > 0    && fMin < 300)  e += (freq.low  || 0) * Math.min(1,(Math.min(fMax,300)-Math.max(fMin,0))/300);
+      if (fMax > 300  && fMin < 2000) e += (freq.mid  || 0) * Math.min(1,(Math.min(fMax,2000)-Math.max(fMin,300))/1700);
+      if (fMax > 2000 && fMin < 8000) e += (freq.high || 0) * Math.min(1,(Math.min(fMax,8000)-Math.max(fMin,2000))/6000);
+      return e;
+    };
+    const target = bandEnergy(em.freqMin, em.freqMax);
+    const others = [
+      bandEnergy(0, em.freqMin),
+      bandEnergy(em.freqMax, 20000),
+    ].filter(v=>v>0);
+    if (others.length===0 || others.every(v => target > v * em.sensitivity)) return em.key;
   }
   return null;
 }
@@ -154,15 +167,16 @@ async function fetchUserFrames(uid) {
 }
 
 function resolveFrames(uid, stateKey) {
+  const FALLBACK = getFallbackChain();
   if (!isAudioState(stateKey) && !isClosedState(stateKey)) {
     return frameCache[`${uid}__${stateKey}`] || [];
   }
   if (isClosedState(stateKey)) {
-    let cur = baseState(stateKey);
+    let cur=baseState(stateKey);
     while (cur) {
       const f=frameCache[`${uid}__${closedVariant(cur)}`];
       if (f?.length) return f;
-      cur=FALLBACK_CHAIN[cur];
+      cur=FALLBACK[cur];
     }
     return [];
   }
@@ -170,7 +184,7 @@ function resolveFrames(uid, stateKey) {
   while (cur) {
     const f=frameCache[`${uid}__${cur}`];
     if (f?.length) return f;
-    cur=FALLBACK_CHAIN[cur];
+    cur=FALLBACK[cur];
   }
   return [];
 }
@@ -349,7 +363,7 @@ const errEl=document.getElementById('err');
 function showErr(msg){errEl.textContent=msg;errEl.classList.add('on');}
 function hideErr(){errEl.classList.remove('on');}
 
-loadConfigs();
+loadConfigs().then(() => { /* init done */ });
 setInterval(poll, POLL_MS);
 poll();
 </script>
