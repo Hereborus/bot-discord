@@ -274,6 +274,10 @@ header {
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.perm-row { display:flex; align-items:center; gap:0.5rem; font-size:0.78rem; padding:0.25rem 0; }
+.perm-badge { font-size:0.6rem; font-weight:700; padding:0.15rem 0.4rem; border-radius:4px; background:rgba(91,79,245,0.2); color:var(--accent); border:1px solid rgba(91,79,245,0.3); white-space:nowrap; flex-shrink:0; }
+.perm-badge.intent { background:rgba(240,165,0,0.15); color:var(--warn); border-color:rgba(240,165,0,0.3); }
 </style>
 </head>
 <body>
@@ -298,6 +302,7 @@ header {
 <div class="tabs-bar">
   <button class="tab-btn active" onclick="switchTab('avatars', this)">🎭 Avatars</button>
   <button class="tab-btn" onclick="switchTab('audio', this)">🎙 Audio Config</button>
+  <button class="tab-btn" onclick="switchTab('setup', this)" id="tab-setup">⚙️ Bot Setup</button>
 </div>
 
 <!-- ══ PANEL: AVATARS ════════════════════════════════════════════ -->
@@ -397,6 +402,73 @@ header {
 
 </div><!-- /panel-audio -->
 
+<!-- ══ PANEL: BOT SETUP ═══════════════════════════════════════ -->
+<div class="panel" id="panel-setup">
+
+  <!-- Statut actuel du bot -->
+  <div id="setup-status-card" class="card" style="max-width:560px;">
+    <div class="card-head">🤖 Statut du bot Discord</div>
+    <div class="card-body" id="setup-status-body" style="display:flex;flex-direction:column;gap:0.75rem;">
+      <div style="display:flex;align-items:center;gap:0.6rem;">
+        <span class="api-dot" id="bot-config-dot"></span>
+        <span id="bot-config-label" style="font-size:0.85rem;color:var(--muted);">Chargement...</span>
+      </div>
+      <button class="obs-btn ghost" id="change-token-btn" onclick="showTokenForm()" style="display:none;align-self:flex-start;font-size:0.75rem;">Changer le token</button>
+    </div>
+  </div>
+
+  <!-- Formulaire token -->
+  <div id="token-form" class="card" style="max-width:560px;display:none;">
+    <div class="card-head">🔑 Token du bot Discord</div>
+    <div class="card-body" style="display:flex;flex-direction:column;gap:1rem;">
+      <p style="font-size:0.78rem;color:var(--muted);line-height:1.65;">
+        Le token identifie ton bot Discord. Ne le partage jamais.<br>
+        Il sera sauvegardé dans le fichier <code style="font-family:var(--mono);background:var(--bg3);padding:0.1rem 0.35rem;border-radius:3px;color:var(--accent2);">.env</code> du bot.
+      </p>
+      <div style="display:flex;gap:0.5rem;align-items:center;">
+        <input type="password" id="token-input" placeholder="MTI3..." autocomplete="off"
+          style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:0.8rem;padding:0.5rem 0.75rem;border-radius:6px;outline:none;">
+        <button class="obs-btn ghost" onclick="toggleTokenVisibility()" id="toggle-vis-btn" style="font-size:0.75rem;white-space:nowrap;">👁 Voir</button>
+      </div>
+      <div id="token-feedback" style="font-size:0.75rem;display:none;padding:0.5rem 0.75rem;border-radius:6px;"></div>
+      <div style="display:flex;gap:0.5rem;">
+        <button class="save-btn" onclick="saveToken()" id="save-token-btn">Vérifier et sauvegarder</button>
+        <button class="obs-btn ghost" onclick="cancelTokenForm()" style="font-size:0.78rem;">Annuler</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Permissions requises -->
+  <div class="card" style="max-width:560px;">
+    <div class="card-head">📋 Permissions Discord requises</div>
+    <div class="card-body" style="display:flex;flex-direction:column;gap:0.6rem;">
+      <p style="font-size:0.75rem;color:var(--muted);margin-bottom:0.25rem;">Dans le <a href="https://discord.com/developers/applications" target="_blank" style="color:var(--accent2);">portail développeur Discord</a>, ton bot doit avoir :</p>
+
+      <div style="display:flex;flex-direction:column;gap:0.4rem;">
+        <div class="perm-row"><span class="perm-badge">Bot</span><strong>View Channels</strong> — voir les canaux du serveur</div>
+        <div class="perm-row"><span class="perm-badge">Bot</span><strong>Read Message History</strong> — lire les commandes !join</div>
+        <div class="perm-row"><span class="perm-badge">Bot</span><strong>Send Messages</strong> — répondre aux commandes</div>
+        <div class="perm-row"><span class="perm-badge">Bot</span><strong>Connect</strong> — rejoindre un canal vocal</div>
+        <div class="perm-row"><span class="perm-badge">Bot</span><strong>Speak</strong> — nécessaire pour recevoir l'audio</div>
+        <div class="perm-row"><span class="perm-badge">Bot</span><strong>Use Voice Activity</strong> — détecter qui parle</div>
+        <div class="perm-row"><span class="perm-badge intent">Privileged Intent</span><strong>Message Content Intent</strong> — lire le contenu des messages (!join)</div>
+        <div class="perm-row"><span class="perm-badge intent">Privileged Intent</span><strong>Server Members Intent</strong> — récupérer les displayNames</div>
+      </div>
+
+      <div style="margin-top:0.5rem;padding:0.6rem 0.75rem;background:var(--bg3);border-radius:6px;border-left:3px solid var(--warn);">
+        <p style="font-size:0.72rem;color:var(--warn);font-weight:600;">⚠ Privileged Intents</p>
+        <p style="font-size:0.72rem;color:var(--muted);margin-top:0.2rem;line-height:1.6;">Les deux intents marqués doivent être activés manuellement dans <strong>Bot → Privileged Gateway Intents</strong> du portail développeur.</p>
+      </div>
+
+      <div style="margin-top:0.25rem;padding:0.6rem 0.75rem;background:var(--bg3);border-radius:6px;border-left:3px solid var(--accent2);">
+        <p style="font-size:0.72rem;color:var(--accent2);font-weight:600;">💡 URL d'invitation recommandée</p>
+        <div id="invite-url" style="font-family:var(--mono);font-size:0.65rem;color:var(--muted);margin-top:0.35rem;word-break:break-all;">Disponible après avoir configuré le token</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /panel-setup -->
+
 <!-- ══ MODAL URL OBS ═════════════════════════════════════════════ -->
 <div class="overlay" id="modal" onclick="if(event.target===this)closeModal()">
   <div class="modal">
@@ -432,14 +504,23 @@ let audioConfig = {
 // userId → { displayName, states: { stateKey → [{file, url},...] } }
 const configData = {};
 
+const AUDIO_STATES = ['silent','low','medium','high'];
+
 function allStates() {
-  const fixed = ['silent','low','medium','high'];
-  return [...fixed, ...audioConfig.emotions.map(e=>e.key).filter(k=>!fixed.includes(k))];
+  const withClosed = AUDIO_STATES.flatMap(s => [s, s+'_closed']);
+  const emotions   = audioConfig.emotions.map(e=>e.key).filter(k=>!AUDIO_STATES.includes(k));
+  return [...withClosed, ...emotions];
 }
 
+function isClosedState(key) { return key.endsWith('_closed'); }
+function baseState(key)     { return key.replace('_closed',''); }
+function closedState(key)   { return key+'_closed'; }
+function isEmotion(key)     { return !AUDIO_STATES.includes(key) && !isClosedState(key); }
+
 function stateColor(key) {
-  const map = { silent:'var(--c-silent)', low:'var(--c-low)', medium:'var(--c-medium)', high:'var(--c-high)', anger:'var(--c-anger)', scream:'var(--c-scream)' };
-  return map[key] || 'var(--muted)';
+  const base = baseState(key);
+  const map  = { silent:'var(--c-silent)', low:'var(--c-low)', medium:'var(--c-medium)', high:'var(--c-high)', anger:'var(--c-anger)', scream:'var(--c-scream)' };
+  return map[base] || map[key] || 'var(--muted)';
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -485,7 +566,7 @@ async function pollApi() {
 // Charger les frames depuis le bot (GET /frames/:userId)
 async function loadFramesFromServer(uid) {
   const states = {};
-  for (const s of allStates()) states[s] = [];
+  for (const s of allStates()) states[s] = []; // init tous les états dont _closed
   try {
     const res  = await fetch(`${apiBase()}/frames/${uid}`, { cache: 'no-store' });
     if (!res.ok) return states;
@@ -645,10 +726,33 @@ async function saveAudioConfig() {
 // ════════════════════════════════════════════════════════════════
 // AVATAR PANEL
 // ════════════════════════════════════════════════════════════════
+// Config blink par user { uid → { freqMs } }
+const blinkConfig = {};
+
+function getUserBlinkFreq(uid) {
+  return blinkConfig[uid]?.freqMs ?? 4000;
+}
+
+function saveBlinkConfig(uid, freqMs) {
+  blinkConfig[uid] = { freqMs };
+  const all = JSON.parse(localStorage.getItem('pngtuber-blinkConfig')||'{}');
+  all[uid] = { freqMs };
+  localStorage.setItem('pngtuber-blinkConfig', JSON.stringify(all));
+  try { new BroadcastChannel('pngtuber-config').postMessage({ type: 'blinkConfig', uid, freqMs }); } catch {}
+}
+
+function loadBlinkConfigs() {
+  try {
+    const all = JSON.parse(localStorage.getItem('pngtuber-blinkConfig')||'{}');
+    Object.assign(blinkConfig, all);
+  } catch {}
+}
+
 function renderUser(uid) {
-  const data = configData[uid];
-  const cont = document.getElementById('users-container');
-  const init = (data.displayName||uid).slice(0,2).toUpperCase();
+  const data  = configData[uid];
+  const cont  = document.getElementById('users-container');
+  const init  = (data.displayName||uid).slice(0,2).toUpperCase();
+  const freq  = getUserBlinkFreq(uid);
   const block = document.createElement('div');
   block.className = 'user-block'; block.id = `user-${uid}`;
   block.innerHTML = `
@@ -661,13 +765,26 @@ function renderUser(uid) {
       <span class="speaking-pill" id="pill-${uid}"></span>
       <button class="obs-btn ghost" style="margin-left:auto;font-size:0.7rem;" onclick="copyViewerUrl('${uid}')">📋 URL OBS</button>
     </div>
+    <div class="blink-row" style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem 1rem;border-bottom:1px solid var(--border);background:var(--bg3);">
+      <span style="font-size:0.7rem;color:var(--muted);white-space:nowrap;">👁 Blink toutes les</span>
+      <input type="range" min="1" max="15" step="0.5" value="${freq/1000}"
+        style="flex:1;accent-color:var(--accent);"
+        oninput="this.nextElementSibling.textContent=this.value+'s'; saveBlinkConfig('${uid}', this.value*1000)">
+      <span style="font-family:var(--mono);font-size:0.72rem;color:var(--accent2);width:36px;">${freq/1000}s</span>
+      <span style="font-size:0.68rem;color:var(--muted);">(nécessite une frame <em>_closed</em>)</span>
+    </div>
     <div class="states-grid" id="sgrid-${uid}"></div>
   `;
   cont.appendChild(block);
   const grid = block.querySelector(`#sgrid-${uid}`);
-  for (const stateKey of allStates()) {
-    const col = buildStateCol(uid, stateKey, data.states[stateKey]||[]);
-    grid.appendChild(col);
+
+  // Afficher les états audio groupés open+closed côte à côte, puis les émotions
+  for (const s of AUDIO_STATES) {
+    grid.appendChild(buildStateCol(uid, s,           data.states[s]||[]));
+    grid.appendChild(buildStateCol(uid, s+'_closed', data.states[s+'_closed']||[]));
+  }
+  for (const em of audioConfig.emotions) {
+    grid.appendChild(buildStateCol(uid, em.key, data.states[em.key]||[]));
   }
 }
 
@@ -678,14 +795,26 @@ function addStateColToUser(uid, stateKey, label) {
 }
 
 function buildStateCol(uid, stateKey, frames) {
-  const label = audioConfig.emotions.find(e=>e.key===stateKey)?.label || stateKey;
+  const isClosed = isClosedState(stateKey);
+  const base     = baseState(stateKey);
+  const emLabel  = audioConfig.emotions.find(e=>e.key===stateKey)?.label;
+  const label    = isClosed
+    ? (base.charAt(0).toUpperCase()+base.slice(1)) + ' 👁 Closed'
+    : (emLabel || stateKey.charAt(0).toUpperCase()+stateKey.slice(1));
+  const borderStyle = isClosed
+    ? `2px dashed ${stateColor(stateKey)}`
+    : `2px solid ${stateColor(stateKey)}`;
   const col = document.createElement('div');
   col.className = 'state-col'; col.dataset.state = stateKey;
-  col.style.borderTop = `2px solid ${stateColor(stateKey)}`;
+  col.style.borderTop = borderStyle;
+  if (isClosed) col.style.opacity = '0.8';
   col.innerHTML = `
     <div class="state-col-title">
-      <div class="sdot" style="background:${stateColor(stateKey)}"></div>
-      ${esc(label.toUpperCase())}
+      <div class="sdot" style="background:${stateColor(stateKey)};${isClosed?'border:1px solid var(--border);':''}" ></div>
+      <span style="${isClosed?'font-style:italic;font-size:0.6rem;':''}">${esc(label.toUpperCase())}</span>
+      ${!isClosed ? `<button title="Régler la position des frames" onclick="openPositioner('${uid}','${stateKey}')"
+        style="margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.7rem;padding:1px 3px;border-radius:3px;"
+        onmouseover="this.style.color='var(--accent2)'" onmouseout="this.style.color='var(--muted)'">📐</button>` : ''}
     </div>
     <div class="frames-list" id="fl-${uid}-${stateKey}"></div>
     <button class="add-frame-btn">
@@ -825,9 +954,121 @@ function toast(msg) {
   document.getElementById('speed-val').textContent=(audioConfig.frameSpeed||150)+'ms';
   speedSl.addEventListener('input',()=>{ audioConfig.frameSpeed=+speedSl.value; document.getElementById('speed-val').textContent=speedSl.value+'ms'; });
 
+  loadBlinkConfigs();
   renderEmotions();
   await pollApi();
   setInterval(pollApi, 800);
+
+// ════════════════════════════════════════════════════════════════
+// BOT SETUP
+// ════════════════════════════════════════════════════════════════
+
+async function loadBotStatus() {
+  try {
+    const res  = await fetch(`${apiBase()}/bot-info`, { cache: "no-store" });
+    const data = await res.json();
+    const dot   = document.getElementById("bot-config-dot");
+    const label = document.getElementById("bot-config-label");
+    const changBtn = document.getElementById("change-token-btn");
+
+    if (data.connected) {
+      dot.className = "api-dot ok";
+      label.innerHTML = `Connecté — <strong style="color:var(--accent2)">${esc(data.tag)}</strong>`;
+      changBtn.style.display = "block";
+      // Afficher URL invitation
+      if (data.id) {
+        const perms = "3145728"; // Connect + Speak + View Channel + Send Messages + Read History
+        document.getElementById("invite-url").innerHTML =
+          `<a href="https://discord.com/oauth2/authorize?client_id=${data.id}&permissions=${perms}&scope=bot" target="_blank" style="color:var(--accent2)">https://discord.com/oauth2/authorize?client_id=${data.id}&permissions=${perms}&scope=bot</a>`;
+      }
+    } else if (data.configured) {
+      dot.className = "api-dot err";
+      label.textContent = "Token configuré mais bot non connecté — relancer le bot";
+      changBtn.style.display = "block";
+    } else {
+      dot.className = "api-dot";
+      label.textContent = "Aucun token configuré";
+      showTokenForm();
+    }
+  } catch {
+    document.getElementById("bot-config-label").textContent = "Impossible de contacter le bot";
+  }
+}
+
+function showTokenForm() {
+  document.getElementById("token-form").style.display = "block";
+  document.getElementById("token-input").value = "";
+  hideFeedback();
+}
+
+function cancelTokenForm() {
+  document.getElementById("token-form").style.display = "none";
+}
+
+function toggleTokenVisibility() {
+  const input = document.getElementById("token-input");
+  const btn   = document.getElementById("toggle-vis-btn");
+  if (input.type === "password") { input.type = "text";     btn.textContent = "🙈 Masquer"; }
+  else                           { input.type = "password"; btn.textContent = "👁 Voir"; }
+}
+
+function showFeedback(msg, ok) {
+  const el = document.getElementById("token-feedback");
+  el.textContent = msg;
+  el.style.display = "block";
+  el.style.background = ok ? "rgba(0,217,184,0.1)" : "rgba(231,76,108,0.1)";
+  el.style.color = ok ? "var(--accent2)" : "var(--danger)";
+  el.style.border = ok ? "1px solid rgba(0,217,184,0.3)" : "1px solid rgba(231,76,108,0.3)";
+}
+
+function hideFeedback() {
+  document.getElementById("token-feedback").style.display = "none";
+}
+
+async function saveToken() {
+  const token = document.getElementById("token-input").value.trim();
+  if (!token) return showFeedback("Entre un token.", false);
+
+  const btn = document.getElementById("save-token-btn");
+  btn.textContent = "Vérification...";
+  btn.disabled = true;
+  hideFeedback();
+
+  try {
+    const res  = await fetch(`${apiBase()}/bot-token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    const data = await res.json();
+
+    if (data.ok) {
+      showFeedback(`✓ Token valide — ${data.tag}. Le bot redémarre...`, true);
+      document.getElementById("token-input").value = "";
+      document.getElementById("token-form").style.display = "none";
+      // Recharger le statut après redémarrage
+      setTimeout(loadBotStatus, 2500);
+    } else {
+      showFeedback(`✗ ${data.error}`, false);
+    }
+  } catch(err) {
+    showFeedback(`Erreur réseau : ${err.message}`, false);
+  } finally {
+    btn.textContent = "Vérifier et sauvegarder";
+    btn.disabled = false;
+  }
+}
+
+function openPositioner(uid, stateKey) {
+  const host = document.getElementById('api-host').value.trim() || 'localhost:3000';
+  const cw   = 500, ch = 500;
+  window.open(`http://${host}/positioner.html?userId=${uid}&state=${stateKey}&w=${cw}&h=${ch}`, '_blank');
+}
+
+// Charger le statut bot au démarrage et toutes les 5s
+loadBotStatus();
+setInterval(loadBotStatus, 5000);
+
 })();
 </script>
 </body>
