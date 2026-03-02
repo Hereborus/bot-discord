@@ -19,6 +19,15 @@
  * TOKEN:
  * - Injecté par le serveur via window.__VIEWER_TOKEN__ (route /viewer/:token)
  * - Ou passé en query param ?token=xxx
+ *
+ * NOTE D'ARCHITECTURE:
+ * - Implémentation viewer côté JS externe.
+ * - Dans la version actuelle du projet, le script inline de `viewer.html`
+ *   est la source de vérité runtime.
+ *
+ * CONTRAT DE DONNÉES ATTENDU:
+ * - `/levels` renvoie `{ _bot, <token>: { db, freq, speaking, ... } }`.
+ * - `/frames/:token` fournit les frames par état.
  */
 
 // ============================================================================
@@ -28,15 +37,19 @@
 const params = new URLSearchParams(location.search);
 
 // Token: priorité à window.__VIEWER_TOKEN__ (injecté serveur), sinon query param
-const viewerToken = (typeof window.__VIEWER_TOKEN__ !== "undefined" && window.__VIEWER_TOKEN__)
-    || params.get("token")
-    || null;
+const viewerToken =
+    (typeof window.__VIEWER_TOKEN__ !== "undefined" &&
+        window.__VIEWER_TOKEN__) ||
+    params.get("token") ||
+    null;
 
 const baseUrl = params.get("sourceUrl") || "http://localhost:3000";
 const imagesBase = params.get("imagesBase") || "./pnjtuber";
 const pollInterval = 200; // ms between API fetches
 
 // Construction de l'URL d'API selon présence du token
+// - mode token: une seule entité/avatar
+// - mode global: tous les utilisateurs actifs (_bot filtré plus bas)
 const sourceUrl = viewerToken
     ? `${baseUrl}/levels/${viewerToken}`
     : `${baseUrl}/levels`;
@@ -186,7 +199,8 @@ function createOrUpdateUserCard(userId, info) {
         userStates.set(userId, userState);
     }
 
-    // Mettre à jour l'image basée sur le nouveau statut
+    // Transition d'état seulement si nécessaire.
+    // On évite de réappliquer la même image à chaque poll (plus fluide + moins de coût DOM).
     const newStatus = info.status || "silent";
     if (userState.currentState !== newStatus) {
         // ====== STATE TRANSITION ======
@@ -213,7 +227,7 @@ function createOrUpdateUserCard(userId, info) {
         userState.currentState = newStatus;
     }
 
-    // Mettre à jour les métadonnées
+    // Zone méta reconstruite à chaque update pour refléter l'état courant.
     const meta = userState.metaElement;
     meta.innerHTML = "";
 
@@ -292,7 +306,7 @@ async function update() {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
-        // Filter out _bot metadata
+        // _bot = métadonnées globales du backend, pas un utilisateur rendu.
         const userIds = Object.keys(data).filter((k) => k !== "_bot");
         const botStatus = data._bot;
 
@@ -302,7 +316,7 @@ async function update() {
             createOrUpdateUserCard(userId, info);
         }
 
-        // Supprimer les utilisateurs qui ne sont plus dans les données
+        // Nettoyage DOM: si un user disparait de la réponse, on retire sa carte.
         for (const userId of userStates.keys()) {
             if (!userIds.includes(userId)) {
                 removeUserCard(userId);
@@ -340,7 +354,7 @@ async function update() {
 // INITIALIZATION
 // ============================================================================
 
-// Démarrer le polling
+// Polling fixe: suffisant ici (pas de websocket), simple à maintenir.
 setInterval(update, pollInterval);
 // Appel initial immédiat
 update();

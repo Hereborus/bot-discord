@@ -1,140 +1,197 @@
-# Documentation du bot Discord (index.js)
+# Documentation technique — `bot-discord`
 
-Ce document explique en détail le fonctionnement de `index.js`, les points de configuration, les endpoints HTTP disponibles, la structure du widget OBS, et l'analyse des fréquences audio.
+Ce document décrit l’architecture actuelle du projet, les endpoints exposés, les pages UI, les flux de données audio, ainsi que les fichiers actifs et les fichiers legacy.
 
-## 1. Configuration générale
+## 1) Vue d’ensemble
 
-Le bot utilise les variables d'environnement via `dotenv` (fichier `.env`). La principale variable requise est :
+Le projet est un bot Discord + serveur HTTP local qui permet de :
 
-```bash
-DISCORD_TOKEN=<token_du_bot>
-LEVELS_PORT=3000          # optionnel, port HTTP pour les endpoints
-```
+- rejoindre un salon vocal (`!join`),
+- analyser l’audio entrant par utilisateur,
+- exposer des niveaux audio en JSON,
+- gérer des assets PNG par état (`silent`, `low`, `medium`, `high`, variantes),
+- configurer le rendu via une UI web (`index.html`),
+- afficher le rendu final via une page viewer (`viewer.html`),
+- ajuster les positions des frames avec un éditeur (`positioner.html`).
 
-Une configuration audio est exposée dans le code sous la forme de la constante `AUDIO_CONFIG` :
-
-```js
-const AUDIO_CONFIG = {
-    thresholds: {
-        low: -50, // dB en-dessous duquel l'état est "low" (faible)
-        medium: -30,
-        high: -15,
-    },
-    durationWindow: 1000, // fenêtre mobile en ms pour moyennage
-    sampleInterval: 200, // fréquence de calcul en ms
-};
-```
-
-Ces valeurs déterminent comment le volume reçu est traduit en statut (`silent`, `low`, `medium`, `high`). Le système garde les échantillons dB des dernières `durationWindow` millisecondes, puis calcule leur moyenne pour atténuer les pics rapides (une personne qui crie longtemps reste dans un état "high").
-
-### Analyse fréquentielle et arbre des triggers
-
-En plus du niveau, le bot calcule une transformée de Fourier rapide (FFT) sur les derniers 1024 échantillons audio pour extraire l'énergie spectrale. Trois bandes configurables (`low`, `mid`, `high`) sont mesurées et renvoyées dans l'objet `freq` de `/levels`.
-Cela permet, par exemple, de réagir différemment lorsque l'audio contient beaucoup de basses ou d'aigus.
-
-Lorsque le volume se situe dans l'état **high**, un sous‑trigger est déterminé en fonction de la domination fréquentielle :
-
-- si la bande `high` est la plus énergétique, on considère un _cri aigu_ (`emotion: "scream"`), utile pour peur ou surprise.
-- si la bande `low` domine, on passe à un _grognement grave_ (`emotion: "anger"`), utile pour colère.
-
-Ces sous‑triggers peuvent être utilisés côté client pour afficher des images différentes : l'utilisateur peut organiser son dossier d'assets selon cette arborescence, par exemple `images/<userId>/high/scream.png` ou `images/<userId>/high/anger.png`.
-
-Les paramètres de bande et d'émotion sont dans `AUDIO_CONFIG.freqBands` et `AUDIO_CONFIG.emotions`, et la page `/config` expose également cette configuration.
-
-La configuration est loguée au démarrage dans la console et exposée via `GET /config`.
-
-## 2. Démarrage du client Discord
-
-```js
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildVoiceStates,
-    ],
-});
-```
-
-Ces intentions sont nécessaires pour écouter les messages (`!join`) et suivre les états vocaux.
-
-L'événement `clientReady` déclenche un log au moment où le bot est prêt.
-
-## 3. Commande `!join`
-
-Lorsqu'un utilisateur envoie `!join` dans un salon texte :
-
-1. Le bot vérifie que l'utilisateur est dans un salon vocal. Sinon, il répond.
-2. Il appelle `joinVoiceChannel(...)` pour se connecter.
-3. Si la connexion possède un `receiver`, il attache deux écouteurs :
-    - `speaking.start`: succède quand un utilisateur commence à parler.
-    - `speaking.end`: déclenché quand il cesse.
-4. Sur `start`, le bot s'abonne au flux Opus de l'utilisateur via `receiver.subscribe(userId, {...})`.
-5. Le flux est décodé en PCM via `prism-media` et un décodeur Opus natif (`@discordjs/opus`).
-6. Les échantillons PCM sont agrégés en RMS, convertis en dB, puis stockés dans un historique pour moyennage.
-7. Tous les `sampleInterval` (200 ms par défaut), le code calcule la moyenne des dB du dernier `durationWindow`, détermine le statut et met à jour `userLevels`.
-8. En cas d'erreur ou de fin de flux, le flux et le décodeur sont nettoyés.
-
-Sur `end`, l'état de l'utilisateur est remis à `silent`.
-
-## 4. Gestion des déconnexions
-
-Le listener `voiceStateUpdate` vérifie s'il n'y a plus que des bots dans le salon vocal où se trouve le bot. Si aucun membre humain ne reste, le bot attend 5 s puis quitte automatiquement.
-
-## 5. Endpoints HTTP
-
-Le bot embarque un serveur HTTP (port 3000 par défaut) qui expose :
-
-- `GET /levels` – renvoie un objet JSON de la forme `{ userId: { rms, db, status, updated } }`.
-- `GET /config` – renvoie la configuration audio (`AUDIO_CONFIG`).
-
-Le serveur supporte le CORS sur `/levels` pour permettre à un widget OBS ou autre page de le consommer.
-
-Il sert aussi statiquement le contenu de `obs-widget/` afin de publier le widget directement depuis le bot (cf. section suivante).
-
-## 6. Widget OBS intégré
-
-Le dossier `obs-widget/` contient une mini-application web :
-
-- `index.html` – point d'entrée.
-- `style.css` – styles visuels simples.
-- `script.js` – logique de récupération périodique de `/levels` et rendu par utilisateur.
-
-Cette page peut être utilisée comme source navigateur dans OBS :
-
-```text
-file:///chemin/vers/bot-discord/obs-widget/index.html?sourceUrl=http://localhost:3000/levels&poll=200
-```
-
-Paramètres via query string :
-
-- `sourceUrl` – URL du service de niveaux (par défaut localhost).
-- `poll` – intervalle de requête en ms.
-- `map` – JSON encodé URL pour associer des noms lisibles aux IDs Discord.
-
-Le widget crée une carte par utilisateur actif et met à jour leur statut (`silent`/`low`/`medium`/`high`) avec un marquage visuel. Il conserve une liste de noms dynamiquement et supprime les utilisateurs inactifs au bout de 10 s.
-
-Les images personnalisées et l'upload sont délégués à l'utilisateur via son propre HTML/JS ; le serveur ne gère pas encore d'uploads.
-
-## 7. Hébergement statique
-
-Le code définit la fonction `serveStatic(req,res)` qui tente de servir un fichier depuis `obs-widget/`. Si le chemin correspond à un dossier, il renvoie `index.html`. Cette logique est utilisée au démarrage du serveur HTTP.
-
-## 8. Points de configuration visibles
-
-- `AUDIO_CONFIG` est imprimée à la console.
-- `/config` permet aux clients (widget ou autre) d'inspecter les seuils et fenêtre.
-
-## 9. Notes opérationnelles
-
-1. **Packages requis** : `discord.js@^14`, `@discordjs/voice`, `@discordjs/opus`, `dotenv`, `prism-media`, `@snazzah/davey`.
-2. **CORS** : activé pour `/levels` pour compatibilité OBS.
-3. **Sécurité** : aucun mécanisme d'authentification HTTP n'est en place (autant le widget que les endpoints sont publics). Si le bot est exposé sur Internet, sécuriser est impératif.
-4. **Extensions futures** :
-    - Endpoint d'upload pour images par état.
-    - Auth via token ou commande Discord pour restreindre l'upload.
-    - Persistances des images sur disque et nouvelle version du widget qui utilise ces URLs.
+Le backend principal est `index.js`.
 
 ---
 
-Ce document et le code contiennent des commentaires supplémentaires pour faciliter la compréhension. N'hésite pas à me demander si tu as besoin de précisions sur un bloc particulier ou sur la logique d'analyse audio.
+## 2) Architecture backend (`index.js`)
+
+### 2.1 Démarrage
+
+Au lancement :
+
+1. lit/crée `.env`,
+2. garantit `LEVELS_PORT` et `USER_HASH_SECRET`,
+3. crée les dossiers `images/` et `meta/` si absents,
+4. démarre le serveur HTTP,
+5. tente le login Discord si `DISCORD_TOKEN` est présent.
+
+### 2.2 Confidentialité des identifiants
+
+Le backend n’expose pas les userId Discord côté HTTP.
+
+- Chaque userId est transformé en token opaque via HMAC-SHA256 tronqué (`hashUid`).
+- Les routes publiques manipulent ces tokens.
+- Les fichiers disque (`meta/*.json`, `images/*`) sont nommés avec le hash.
+
+### 2.3 Pipeline audio
+
+Quand un utilisateur parle :
+
+1. `receiver.subscribe(userId)` récupère le flux opus,
+2. décodage PCM (`prism-media` + `@discordjs/opus`),
+3. calcul RMS puis dB,
+4. lissage par fenêtre temporelle (`durationWindow`),
+5. calcul fréquentiel FFT (`low`, `mid`, `high`),
+6. stockage dans `userLevels`.
+
+### 2.4 Déconnexion auto vocale
+
+Si le bot reste seul (plus d’humains dans le vocal), il se déconnecte automatiquement après 5s.
+
+---
+
+## 3) Endpoints HTTP (actuels)
+
+### 3.1 Endpoints d’état
+
+- `GET /levels`
+    - Retourne `_bot` + données par token utilisateur.
+    - Données utilisateur: `db`, `rms`, `freq`, `speaking`, `displayName`, `updated`.
+
+- `GET /status`
+    - Résumé: état connecté du bot + nombre d’utilisateurs actifs.
+
+- `GET /bot-info`
+    - Statut token Discord, connexion, tag/id du bot si connecté.
+
+- `POST /bot-token`
+    - Vérifie un token Discord, le sauvegarde dans `.env`, puis redémarre le process.
+
+### 3.2 Endpoints assets/config
+
+- `GET /frames/:token`
+    - Retourne les frames par état pour un utilisateur.
+
+- `GET /images/:token/:state/:file`
+    - Sert l’image demandée.
+
+- `GET /user-config/:token`
+- `POST /user-config/:token`
+    - Lecture/écriture de la config utilisateur.
+
+- `GET /known-users`
+    - Liste des utilisateurs connus (actifs + persistés), avec `token`, `displayName`.
+
+- `POST /upload`
+    - Upload image multipart (`token`, `stateKey`, `image`).
+
+- `POST /reorder`
+    - Persiste l’ordre des frames (`token`, `stateKey`, `order[]`).
+
+- `POST /delete-frame`
+    - Supprime une frame d’un état.
+
+- `POST /delete-user/:token`
+    - Supprime les données d’un utilisateur (images + meta + mémoire).
+
+### 3.3 Fichiers statiques
+
+Le serveur sert aussi les fichiers du projet (`/index.html`, `/viewer.html`, `/positioner.html`, etc.).
+
+---
+
+## 4) Pages web principales
+
+## 4.1 `index.html` (UI principale)
+
+Fonctions clés :
+
+- affichage des utilisateurs actifs,
+- gestion des frames par état,
+- upload/suppression/réordonnancement des assets,
+- édition de la config audio (seuils/émotions/frame speed/hold),
+- setup token Discord du bot,
+- génération d’URL viewer et positioner.
+
+## 4.2 `viewer.html` (rendu OBS)
+
+Fonctions clés :
+
+- polling de `/levels`,
+- classification d’état selon dB,
+- détection émotionnelle selon bandes fréquentielles,
+- fallback d’états (si images manquantes),
+- moteur flipbook,
+- blink automatique via états `_closed`,
+- application des positions stockées en local.
+
+## 4.3 `positioner.html` (éditeur positions)
+
+Fonctions clés :
+
+- charge les frames d’un état,
+- superpose les images sur canvas,
+- permet drag + sliders (`x`, `y`, `s`),
+- sauvegarde en `localStorage`,
+- notifie le viewer via `BroadcastChannel`.
+
+---
+
+## 5) Fichiers actifs vs legacy
+
+### Actifs (utilisés en pratique)
+
+- `index.js` (backend + bot Discord)
+- `index.html` (UI principale)
+- `viewer.html` (viewer)
+- `positioner.html` (éditeur de positions)
+- `styles.css` (styles partagés)
+
+### Legacy / non branchés directement par les pages actuelles
+
+- `viewer.js`
+- `script.js`
+- `positioner.js`
+
+Ces fichiers existent mais les pages principales embarquent aujourd’hui majoritairement leur logique en script inline.
+Ils peuvent servir de base de refactor (externalisation JS), mais ne sont pas la source de vérité d’exécution actuelle.
+
+---
+
+## 6) Données disque
+
+- `images/<hashUser>/<state>/...` : assets uploadés
+- `meta/<hashUser>.json` : ordre des frames
+- `meta/<hashUser>_config.json` : config audio utilisateur
+
+---
+
+## 7) Variables d’environnement
+
+- `DISCORD_TOKEN` : token bot Discord
+- `USER_HASH_SECRET` : secret HMAC (généré si absent)
+- `LEVELS_PORT` : port HTTP local (défaut `3000`)
+
+---
+
+## 8) Vérification effectuée (passe Copilot)
+
+- Diagnostic VS Code: aucune erreur remontée.
+- Vérification syntaxe backend: `node --check index.js` OK.
+- Correctif appliqué sur `/known-users` :
+    - déduplication des utilisateurs persistés corrigée,
+    - comparaison directe sur token/hash pour éviter les faux doublons.
+
+---
+
+## 9) Recommandations de maintenance
+
+1. Choisir une seule stratégie JS côté front (`inline` ou `fichiers externes`) pour réduire la dette de maintenance.
+2. Ajouter un script `npm` de validation rapide (ex: `node --check index.js`).
+3. Si exposition réseau: ajouter auth HTTP et restrictions CORS.
+4. Prévoir une migration explicite des clés `localStorage` si le format évolue.
