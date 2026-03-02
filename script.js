@@ -1,10 +1,29 @@
+/**
+ * LEGACY WIDGET SCRIPT (`script.js`)
+ * ==================================
+ *
+ * Statut:
+ * - Ce fichier est conservé pour compatibilité / historique.
+ * - Les pages principales actuelles utilisent surtout des scripts inline
+ *   dans `index.html` et `viewer.html`.
+ *
+ * Rôle:
+ * - Poll un endpoint `/levels` périodiquement.
+ * - Affiche une carte par utilisateur et met à jour un état visuel.
+ * - Permet de charger des images locales par état (on/off) côté navigateur.
+ *
+ * Limites:
+ * - Ne couvre pas toutes les fonctionnalités avancées (flipbook, fallback,
+ *   blink par états `_closed`, etc.) présentes dans `viewer.html`.
+ */
+
 // Configuration via query params:
 // ?sourceUrl=http://localhost:3000/levels&poll=200
 const params = new URLSearchParams(location.search);
 const sourceUrl = params.get("sourceUrl") || "http://localhost:3000/levels";
 const poll = parseInt(params.get("poll") || "200", 10);
 
-// Map of userId->displayName can be passed as JSON in 'map' param (urlencoded)
+// Map optionnelle userId -> displayName, transmise en JSON via ?map=
 let nameMap = {};
 try {
     if (params.get("map")) nameMap = JSON.parse(params.get("map"));
@@ -13,7 +32,9 @@ try {
 const container = document.getElementById("container");
 const configPanel = document.getElementById("image-controls");
 
-// image config by state and on/off
+// Configuration d'images par état:
+// on  = image active pour l'état courant
+// off = image affichée pour les états non actifs
 const stateImages = {
     silent: { on: null, off: null },
     low: { on: null, off: null },
@@ -21,7 +42,7 @@ const stateImages = {
     high: { on: null, off: null },
 };
 
-// build controls
+// Générer les contrôles d'upload (on/off pour chaque état)
 ["silent", "low", "medium", "high"].forEach((s) => {
     ["on", "off"].forEach((o) => {
         const div = document.createElement("div");
@@ -36,7 +57,7 @@ const stateImages = {
             if (file) {
                 const url = URL.createObjectURL(file);
                 stateImages[s][o] = url;
-                // update existing user elements
+                // Réappliquer le rendu sur toutes les cartes déjà créées.
                 for (const u of users.values()) {
                     updateUserState(u, u.currentState);
                 }
@@ -49,12 +70,13 @@ const stateImages = {
 });
 
 function updateUserState(u, state) {
+    // Règle d'affichage: un seul état actif à la fois.
     u.currentState = state;
     for (const node of u.states.children) {
         if (node.dataset.state === state) {
             node.classList.add("on");
             node.classList.remove("off");
-            // apply image if available
+            // Appliquer l'image custom si disponible.
             const imgUrl = stateImages[state].on;
             if (imgUrl) {
                 node.style.backgroundImage = `url('${imgUrl}')`;
@@ -75,6 +97,7 @@ function updateUserState(u, state) {
 const users = new Map();
 
 function ensureUser(id) {
+    // Factory DOM: crée la carte une seule fois puis la réutilise à chaque poll.
     if (users.has(id)) return users.get(id);
     const el = document.createElement("div");
     el.className = "user";
@@ -103,18 +126,18 @@ function ensureUser(id) {
 
 function updateLevels(obj) {
     const now = Date.now();
-    // mark seen
+    // Marquer les users vus dans ce cycle de poll.
     for (const id of Object.keys(obj)) {
         const info = obj[id];
         const u = ensureUser(id);
-        // set db
+        // Afficher la valeur dB reçue.
         u.db.textContent = (info.db || -100).toFixed(2) + " dB";
-        // set classes: only one state on at a time
+        // Sélection de l'état en provenance de l'API.
         const s = info.status || "silent";
         updateUserState(u, s);
         u.last = info.updated || now;
     }
-    // remove stale users (not updated in 10s)
+    // Nettoyer les users inactifs (pas de mise à jour depuis >10s).
     for (const [id, u] of users) {
         if (!obj[id] && u.last && now - u.last > 10000) {
             u.el.remove();
@@ -125,13 +148,14 @@ function updateLevels(obj) {
 
 async function pollOnce() {
     try {
+        // no-store: toujours lire des niveaux frais (OBS/temps réel).
         const r = await fetch(sourceUrl, { cache: "no-store" });
         if (r.ok) {
             const j = await r.json();
             updateLevels(j);
         }
     } catch (e) {
-        // show error hint
+        // Afficher une indication d'erreur réseau/API dans le widget.
         let h = document.querySelector(".hint");
         if (!h) {
             h = document.createElement("div");
