@@ -195,3 +195,48 @@ Ils peuvent servir de base de refactor (externalisation JS), mais ne sont pas la
 2. Ajouter un script `npm` de validation rapide (ex: `node --check index.js`).
 3. Si exposition réseau: ajouter auth HTTP et restrictions CORS.
 4. Prévoir une migration explicite des clés `localStorage` si le format évolue.
+
+---
+
+## 10) Build Windows (`.exe` + installateur + raccourci)
+
+### 10.1 Générer l’exécutable
+
+```bash
+npm run build:exe
+```
+
+(`pkg` utilise la cible `node18-win-x64` dans ce projet.)
+
+Sortie: `dist/pngtuber-bot.exe`
+
+### 10.2 Générer l’installateur
+
+Pré-requis: **Inno Setup 6** installé sur Windows.
+
+```bash
+npm run build:installer
+```
+
+Sortie: `dist/pngtuber-bot-setup.exe`
+
+### 10.3 Build complet
+
+```bash
+npm run build:all
+```
+
+Produit les 2 exécutables:
+
+- `dist/pngtuber-bot.exe` (app)
+- `dist/pngtuber-bot-setup.exe` (installateur)
+
+### 10.4 Comportement au lancement
+
+Au démarrage de l’app, le serveur ouvre automatiquement dans le navigateur par défaut:
+
+- `http://localhost:<LEVELS_PORT>/index.html`
+
+Pour désactiver cette ouverture auto:
+
+- variable d’environnement `PNGTUBER_NO_BROWSER=1`

@@ -32,15 +32,26 @@ import http from "http";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import os from "os";
 import prism from "prism-media";
 import dotenv from "dotenv";
 import fftPkg from "fft-js";
+import { exec } from "child_process";
 
 const { fft, util: fftUtil } = fftPkg;
-const ROOT = process.cwd();
-const IMAGES_DIR = path.join(ROOT, "images");
-const META_DIR = path.join(ROOT, "meta");
-const ENV_PATH = path.join(ROOT, ".env");
+const IS_PACKAGED = Boolean(process.pkg);
+const SOURCE_ROOT = process.cwd();
+const STATIC_ROOT = IS_PACKAGED ? path.dirname(process.execPath) : SOURCE_ROOT;
+const DATA_ROOT = IS_PACKAGED
+    ? path.join(process.env.APPDATA || os.homedir(), "PNGTuberBot")
+    : SOURCE_ROOT;
+const IMAGES_DIR = path.join(DATA_ROOT, "images");
+const META_DIR = path.join(DATA_ROOT, "meta");
+const ENV_PATH = path.join(DATA_ROOT, ".env");
+
+if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
+if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
+if (!fs.existsSync(META_DIR)) fs.mkdirSync(META_DIR, { recursive: true });
 
 // ════════════════════════════════════════════════════════════════
 // .ENV — généré automatiquement au premier lancement si absent
@@ -87,9 +98,6 @@ ensureEnvKey("LEVELS_PORT", "3000");
 ensureEnvKey("USER_HASH_SECRET", crypto.randomBytes(32).toString("hex"));
 
 dotenv.config();
-
-if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
-if (!fs.existsSync(META_DIR)) fs.mkdirSync(META_DIR, { recursive: true });
 
 // ════════════════════════════════════════════════════════════════
 // SYSTÈME DE TOKEN — userId Discord → token opaque 16 hex
@@ -144,6 +152,8 @@ let botConnected = false,
     connectedChannelId = null;
 let tokenRejected = false;
 const PORT = process.env.LEVELS_PORT || 3000;
+let httpServer = null;
+let isShuttingDown = false;
 
 // ════════════════════════════════════════════════════════════════
 // UTILITAIRES HTTP
@@ -188,6 +198,22 @@ function readBody(req) {
         req.on("data", (d) => c.push(d));
         req.on("end", () => res(Buffer.concat(c)));
         req.on("error", rej);
+    });
+}
+
+function openDefaultBrowser(url) {
+    if (process.env.PNGTUBER_NO_BROWSER === "1") return;
+    const cmd =
+        process.platform === "win32"
+            ? `start "" "${url}"`
+            : process.platform === "darwin"
+              ? `open "${url}"`
+              : `xdg-open "${url}"`;
+    exec(cmd, (err) => {
+        if (err)
+            console.warn(
+                `⚠ Impossible d'ouvrir automatiquement le navigateur: ${err.message}`,
+            );
     });
 }
 
@@ -297,299 +323,352 @@ function parseMultipart(body, boundary) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// SHUTDOWN PROPRE
+// ════════════════════════════════════════════════════════════════
+function shutdownApp() {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.log("\n🛑 Fermeture de l'application...");
+
+    // Nettoyer la connexion vocale
+    if (currentConnection) {
+        currentConnection.destroy();
+        currentConnection = null;
+    }
+    connectedGuildId = null;
+    connectedChannelId = null;
+    userLevels.clear();
+
+    // Fermer le serveur HTTP
+    if (httpServer) {
+        httpServer.close(() => {
+            console.log("✓ Serveur HTTP fermé");
+            console.log("✓ Port libéré");
+            process.exit(0);
+        });
+        // Force exit après 2 secondes si le serveur ne se ferme pas
+        setTimeout(() => {
+            console.log("⚠ Fermeture forcée");
+            process.exit(0);
+        }, 2000);
+    } else {
+        process.exit(0);
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
 // HTTP SERVER
 // ════════════════════════════════════════════════════════════════
-http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://localhost`);
-    if (req.method === "OPTIONS") {
-        res.writeHead(200, CORS);
-        res.end();
-        return;
-    }
+httpServer = http
+    .createServer(async (req, res) => {
+        const url = new URL(req.url, `http://localhost`);
+        if (req.method === "OPTIONS") {
+            res.writeHead(200, CORS);
+            res.end();
+            return;
+        }
 
-    // GET /levels — tokens opaques comme clés, aucun userId
-    if (req.method === "GET" && url.pathname === "/levels") {
-        // Contrat API: _bot contient l'état global, les autres clés sont des tokens user.
-        // Important: jamais d'userId Discord en sortie HTTP.
-        const p = {
-            _bot: {
-                connected: botConnected,
-                updatedAt: new Date().toISOString(),
-            },
-        };
-        for (const [uid, d] of userLevels)
-            p[tokenFor(uid)] = {
-                db: d.db,
-                rms: d.rms,
-                freq: d.freq,
-                speaking: d.speaking,
-                displayName: d.displayName,
-                updated: d.updated,
+        // GET /levels — tokens opaques comme clés, aucun userId
+        if (req.method === "GET" && url.pathname === "/levels") {
+            // Contrat API: _bot contient l'état global, les autres clés sont des tokens user.
+            // Important: jamais d'userId Discord en sortie HTTP.
+            const p = {
+                _bot: {
+                    connected: botConnected,
+                    updatedAt: new Date().toISOString(),
+                },
             };
-        return json(res, p);
-    }
+            for (const [uid, d] of userLevels)
+                p[tokenFor(uid)] = {
+                    db: d.db,
+                    rms: d.rms,
+                    freq: d.freq,
+                    speaking: d.speaking,
+                    displayName: d.displayName,
+                    updated: d.updated,
+                };
+            return json(res, p);
+        }
 
-    // GET /status
-    if (req.method === "GET" && url.pathname === "/status")
-        return json(res, { botConnected, usersActive: userLevels.size });
+        // GET /status
+        if (req.method === "GET" && url.pathname === "/status")
+            return json(res, { botConnected, usersActive: userLevels.size });
 
-    // GET /bot-info
-    if (req.method === "GET" && url.pathname === "/bot-info") {
-        const hasToken = !!process.env.DISCORD_TOKEN;
-        return json(res, {
-            configured: hasToken,
-            connected: botConnected,
-            tokenInvalid: hasToken && !botConnected && tokenRejected,
-            tag: botConnected ? client.user?.tag : null,
-            id: botConnected ? client.user?.id : null,
-        });
-    }
-
-    // POST /bot-token
-    if (req.method === "POST" && url.pathname === "/bot-token") {
-        try {
-            const { token } = JSON.parse((await readBody(req)).toString());
-            if (!token || token.trim().length < 50)
-                return json(res, { ok: false, error: "Token trop court" }, 400);
-            const vRes = await fetch("https://discord.com/api/v10/users/@me", {
-                headers: { Authorization: `Bot ${token.trim()}` },
+        // GET /bot-info
+        if (req.method === "GET" && url.pathname === "/bot-info") {
+            const hasToken = !!process.env.DISCORD_TOKEN;
+            return json(res, {
+                configured: hasToken,
+                connected: botConnected,
+                tokenInvalid: hasToken && !botConnected && tokenRejected,
+                tag: botConnected ? client.user?.tag : null,
+                id: botConnected ? client.user?.id : null,
             });
-            if (!vRes.ok) {
-                const e = await vRes.json().catch(() => ({}));
-                return json(
-                    res,
-                    { ok: false, error: `Rejeté: ${e.message || vRes.status}` },
-                    401,
+        }
+
+        // POST /bot-token
+        if (req.method === "POST" && url.pathname === "/bot-token") {
+            try {
+                const { token } = JSON.parse((await readBody(req)).toString());
+                if (!token || token.trim().length < 50)
+                    return json(
+                        res,
+                        { ok: false, error: "Token trop court" },
+                        400,
+                    );
+                const vRes = await fetch(
+                    "https://discord.com/api/v10/users/@me",
+                    {
+                        headers: { Authorization: `Bot ${token.trim()}` },
+                    },
                 );
+                if (!vRes.ok) {
+                    const e = await vRes.json().catch(() => ({}));
+                    return json(
+                        res,
+                        {
+                            ok: false,
+                            error: `Rejeté: ${e.message || vRes.status}`,
+                        },
+                        401,
+                    );
+                }
+                const botUser = await vRes.json();
+                setEnvKey("DISCORD_TOKEN", token.trim());
+                console.log(`Token mis à jour → redémarrage...`);
+                setTimeout(() => process.exit(0), 500);
+                return json(res, { ok: true, tag: botUser.username });
+            } catch (err) {
+                return json(res, { ok: false, error: err.message }, 500);
             }
-            const botUser = await vRes.json();
-            setEnvKey("DISCORD_TOKEN", token.trim());
-            console.log(`Token mis à jour → redémarrage...`);
-            setTimeout(() => process.exit(0), 500);
-            return json(res, { ok: true, tag: botUser.username });
-        } catch (err) {
-            return json(res, { ok: false, error: err.message }, 500);
         }
-    }
 
-    // GET /frames/:token
-    if (req.method === "GET" && url.pathname.startsWith("/frames/")) {
-        const t = url.pathname.split("/")[2],
-            uid = uidFor(t);
-        if (!uid) return json(res, { error: "token inconnu" }, 404);
-        return json(res, getFrames(uid));
-    }
-
-    // GET /images/:token/:state/:file
-    if (req.method === "GET" && url.pathname.startsWith("/images/")) {
-        const parts = url.pathname.split("/");
-        if (parts.length >= 5) {
-            const uid = uidFor(parts[2]);
-            if (!uid) {
-                res.writeHead(404);
-                res.end("Not found");
-                return;
-            }
-            const fp = path.join(
-                IMAGES_DIR,
-                hashUid(uid),
-                parts[3],
-                parts.slice(4).join("/"),
-            );
-            if (!fp.startsWith(IMAGES_DIR)) {
-                res.writeHead(403);
-                res.end();
-                return;
-            }
-            if (serveFile(res, fp)) return;
+        // GET /frames/:token
+        if (req.method === "GET" && url.pathname.startsWith("/frames/")) {
+            const t = url.pathname.split("/")[2],
+                uid = uidFor(t);
+            if (!uid) return json(res, { error: "token inconnu" }, 404);
+            return json(res, getFrames(uid));
         }
-        res.writeHead(404);
-        res.end("Not found");
-        return;
-    }
 
-    // GET /user-config/:token
-    if (req.method === "GET" && url.pathname.startsWith("/user-config/")) {
-        const uid = uidFor(url.pathname.split("/")[2]);
-        if (!uid) return json(res, { error: "token inconnu" }, 404);
-        return json(res, readCfg(uid) || {});
-    }
+        // GET /images/:token/:state/:file
+        if (req.method === "GET" && url.pathname.startsWith("/images/")) {
+            const parts = url.pathname.split("/");
+            if (parts.length >= 5) {
+                const uid = uidFor(parts[2]);
+                if (!uid) {
+                    res.writeHead(404);
+                    res.end("Not found");
+                    return;
+                }
+                const fp = path.join(
+                    IMAGES_DIR,
+                    hashUid(uid),
+                    parts[3],
+                    parts.slice(4).join("/"),
+                );
+                if (!fp.startsWith(IMAGES_DIR)) {
+                    res.writeHead(403);
+                    res.end();
+                    return;
+                }
+                if (serveFile(res, fp)) return;
+            }
+            res.writeHead(404);
+            res.end("Not found");
+            return;
+        }
 
-    // POST /user-config/:token
-    if (req.method === "POST" && url.pathname.startsWith("/user-config/")) {
-        try {
+        // GET /user-config/:token
+        if (req.method === "GET" && url.pathname.startsWith("/user-config/")) {
             const uid = uidFor(url.pathname.split("/")[2]);
             if (!uid) return json(res, { error: "token inconnu" }, 404);
-            writeCfg(uid, JSON.parse((await readBody(req)).toString()));
-            return json(res, { ok: true });
-        } catch (err) {
-            return json(res, { error: err.message }, 500);
+            return json(res, readCfg(uid) || {});
         }
-    }
 
-    // GET /known-users — token + displayName uniquement
-    if (req.method === "GET" && url.pathname === "/known-users") {
-        const users = [];
-        // Users actifs en mémoire
-        for (const [uid, token] of uidToToken) {
-            const cfg = readCfg(uid);
-            users.push({
-                token,
-                displayName: cfg?.displayName || "???",
-                hasConfig: !!cfg,
-            });
-        }
-        // Users persistés sur disque (sessions précédentes)
-        if (fs.existsSync(META_DIR)) {
-            for (const f of fs.readdirSync(META_DIR)) {
-                if (!f.endsWith("_config.json")) continue;
-                const fileHash = f.replace("_config.json", "");
-                if (users.find((u) => u.token === fileHash)) continue;
-                try {
-                    const cfg = JSON.parse(
-                        fs.readFileSync(path.join(META_DIR, f), "utf-8"),
-                    );
-                    if (cfg?.displayName)
-                        users.push({
-                            token: fileHash,
-                            displayName: cfg.displayName,
-                            hasConfig: true,
-                            offline: true,
-                        });
-                } catch {}
+        // POST /user-config/:token
+        if (req.method === "POST" && url.pathname.startsWith("/user-config/")) {
+            try {
+                const uid = uidFor(url.pathname.split("/")[2]);
+                if (!uid) return json(res, { error: "token inconnu" }, 404);
+                writeCfg(uid, JSON.parse((await readBody(req)).toString()));
+                return json(res, { ok: true });
+            } catch (err) {
+                return json(res, { error: err.message }, 500);
             }
         }
-        return json(res, users);
-    }
 
-    // POST /upload — champ "token" au lieu de "userId"
-    if (req.method === "POST" && url.pathname === "/upload") {
-        try {
-            const body = await readBody(req),
-                ct = req.headers["content-type"] || "",
-                bm = ct.match(/boundary=([^\s;]+)/);
-            if (!bm) return json(res, { error: "boundary manquant" }, 400);
-            const parts = parseMultipart(body, bm[1]),
-                fields = {};
-            // Le multipart mélange champs texte et fichier binaire: on sépare les deux.
-            for (const p of parts)
-                if (!p.filename) fields[p.name] = p.data.toString();
-            const imgPart = parts.find((p) => p.filename);
-            const { token, stateKey } = fields,
-                uid = uidFor(token);
-            if (!uid || !stateKey || !imgPart)
-                return json(
-                    res,
-                    { error: "token invalide, stateKey ou image manquant" },
-                    400,
+        // GET /known-users — token + displayName uniquement
+        if (req.method === "GET" && url.pathname === "/known-users") {
+            const users = [];
+            // Users actifs en mémoire
+            for (const [uid, token] of uidToToken) {
+                const cfg = readCfg(uid);
+                users.push({
+                    token,
+                    displayName: cfg?.displayName || "???",
+                    hasConfig: !!cfg,
+                });
+            }
+            // Users persistés sur disque (sessions précédentes)
+            if (fs.existsSync(META_DIR)) {
+                for (const f of fs.readdirSync(META_DIR)) {
+                    if (!f.endsWith("_config.json")) continue;
+                    const fileHash = f.replace("_config.json", "");
+                    if (users.find((u) => u.token === fileHash)) continue;
+                    try {
+                        const cfg = JSON.parse(
+                            fs.readFileSync(path.join(META_DIR, f), "utf-8"),
+                        );
+                        if (cfg?.displayName)
+                            users.push({
+                                token: fileHash,
+                                displayName: cfg.displayName,
+                                hasConfig: true,
+                                offline: true,
+                            });
+                    } catch {}
+                }
+            }
+            return json(res, users);
+        }
+
+        // POST /upload — champ "token" au lieu de "userId"
+        if (req.method === "POST" && url.pathname === "/upload") {
+            try {
+                const body = await readBody(req),
+                    ct = req.headers["content-type"] || "",
+                    bm = ct.match(/boundary=([^\s;]+)/);
+                if (!bm) return json(res, { error: "boundary manquant" }, 400);
+                const parts = parseMultipart(body, bm[1]),
+                    fields = {};
+                // Le multipart mélange champs texte et fichier binaire: on sépare les deux.
+                for (const p of parts)
+                    if (!p.filename) fields[p.name] = p.data.toString();
+                const imgPart = parts.find((p) => p.filename);
+                const { token, stateKey } = fields,
+                    uid = uidFor(token);
+                if (!uid || !stateKey || !imgPart)
+                    return json(
+                        res,
+                        { error: "token invalide, stateKey ou image manquant" },
+                        400,
+                    );
+                const ext = path.extname(imgPart.filename).toLowerCase();
+                // Validation defensive: seuls les mime d'image déclarés dans MIME sont acceptés.
+                if (!MIME[ext] || !MIME[ext].startsWith("image/"))
+                    return json(res, { error: "Format non supporté" }, 400);
+                const dir = stateDir(uid, stateKey);
+                fs.mkdirSync(dir, { recursive: true });
+                const fname = `${Date.now()}_${imgPart.filename.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+                fs.writeFileSync(path.join(dir, fname), imgPart.data);
+                const meta = readMeta(uid);
+                if (!meta[stateKey]) meta[stateKey] = [];
+                meta[stateKey].push(fname);
+                writeMeta(uid, meta);
+                return json(res, {
+                    ok: true,
+                    file: fname,
+                    url: `/images/${token}/${stateKey}/${fname}`,
+                });
+            } catch (err) {
+                return json(res, { error: err.message }, 500);
+            }
+        }
+
+        // POST /reorder  { token, stateKey, order:[] }
+        if (req.method === "POST" && url.pathname === "/reorder") {
+            try {
+                const { token, stateKey, order } = JSON.parse(
+                    (await readBody(req)).toString(),
                 );
-            const ext = path.extname(imgPart.filename).toLowerCase();
-            // Validation defensive: seuls les mime d'image déclarés dans MIME sont acceptés.
-            if (!MIME[ext] || !MIME[ext].startsWith("image/"))
-                return json(res, { error: "Format non supporté" }, 400);
-            const dir = stateDir(uid, stateKey);
-            fs.mkdirSync(dir, { recursive: true });
-            const fname = `${Date.now()}_${imgPart.filename.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-            fs.writeFileSync(path.join(dir, fname), imgPart.data);
-            const meta = readMeta(uid);
-            if (!meta[stateKey]) meta[stateKey] = [];
-            meta[stateKey].push(fname);
-            writeMeta(uid, meta);
-            return json(res, {
-                ok: true,
-                file: fname,
-                url: `/images/${token}/${stateKey}/${fname}`,
-            });
-        } catch (err) {
-            return json(res, { error: err.message }, 500);
+                const uid = uidFor(token);
+                if (!uid || !stateKey || !Array.isArray(order))
+                    return json(res, { error: "params manquants" }, 400);
+                const meta = readMeta(uid);
+                meta[stateKey] = order;
+                writeMeta(uid, meta);
+                return json(res, { ok: true });
+            } catch (err) {
+                return json(res, { error: err.message }, 500);
+            }
         }
-    }
 
-    // POST /reorder  { token, stateKey, order:[] }
-    if (req.method === "POST" && url.pathname === "/reorder") {
-        try {
-            const { token, stateKey, order } = JSON.parse(
-                (await readBody(req)).toString(),
-            );
+        // POST /delete-frame  { token, stateKey, file }
+        if (req.method === "POST" && url.pathname === "/delete-frame") {
+            try {
+                const { token, stateKey, file } = JSON.parse(
+                    (await readBody(req)).toString(),
+                );
+                const uid = uidFor(token);
+                if (!uid || !stateKey || !file)
+                    return json(res, { error: "params manquants" }, 400);
+                const fp = path.join(IMAGES_DIR, hashUid(uid), stateKey, file);
+                if (!fp.startsWith(IMAGES_DIR))
+                    return json(res, { error: "Interdit" }, 403);
+                if (fs.existsSync(fp)) fs.unlinkSync(fp);
+                const meta = readMeta(uid);
+                if (meta[stateKey])
+                    meta[stateKey] = meta[stateKey].filter((f) => f !== file);
+                writeMeta(uid, meta);
+                return json(res, { ok: true });
+            } catch (err) {
+                return json(res, { error: err.message }, 500);
+            }
+        }
+
+        // POST /delete-user/:token — supprimer toutes les données d'un user
+        if (req.method === "POST" && url.pathname.startsWith("/delete-user/")) {
+            const token = url.pathname.split("/")[2];
             const uid = uidFor(token);
-            if (!uid || !stateKey || !Array.isArray(order))
-                return json(res, { error: "params manquants" }, 400);
-            const meta = readMeta(uid);
-            meta[stateKey] = order;
-            writeMeta(uid, meta);
-            return json(res, { ok: true });
-        } catch (err) {
-            return json(res, { error: err.message }, 500);
+            if (!uid) return json(res, { error: "token inconnu" }, 404);
+            try {
+                // Supprimer dossier images
+                const imgDir = path.join(IMAGES_DIR, hashUid(uid));
+                if (fs.existsSync(imgDir))
+                    fs.rmSync(imgDir, { recursive: true, force: true });
+                // Supprimer meta et config
+                [metaPath(uid), configPath(uid)].forEach((p) => {
+                    try {
+                        fs.unlinkSync(p);
+                    } catch {}
+                });
+                // Retirer de la mémoire
+                tokenToUid.delete(token);
+                uidToToken.delete(uid);
+                userLevels.delete(uid);
+                console.log(`🗑 User supprimé: [token]`);
+                return json(res, { ok: true });
+            } catch (err) {
+                return json(res, { error: err.message }, 500);
+            }
         }
-    }
 
-    // POST /delete-frame  { token, stateKey, file }
-    if (req.method === "POST" && url.pathname === "/delete-frame") {
-        try {
-            const { token, stateKey, file } = JSON.parse(
-                (await readBody(req)).toString(),
-            );
-            const uid = uidFor(token);
-            if (!uid || !stateKey || !file)
-                return json(res, { error: "params manquants" }, 400);
-            const fp = path.join(IMAGES_DIR, hashUid(uid), stateKey, file);
-            if (!fp.startsWith(IMAGES_DIR))
-                return json(res, { error: "Interdit" }, 403);
-            if (fs.existsSync(fp)) fs.unlinkSync(fp);
-            const meta = readMeta(uid);
-            if (meta[stateKey])
-                meta[stateKey] = meta[stateKey].filter((f) => f !== file);
-            writeMeta(uid, meta);
-            return json(res, { ok: true });
-        } catch (err) {
-            return json(res, { error: err.message }, 500);
+        // Fichiers statiques
+        let pathname = url.pathname;
+        if (pathname === "/" || pathname === "") pathname = "/index.html";
+        const fp = path.join(STATIC_ROOT, pathname);
+        if (!fp.startsWith(STATIC_ROOT)) {
+            res.writeHead(403);
+            res.end();
+            return;
         }
-    }
-
-    // POST /delete-user/:token — supprimer toutes les données d'un user
-    if (req.method === "POST" && url.pathname.startsWith("/delete-user/")) {
-        const token = url.pathname.split("/")[2];
-        const uid = uidFor(token);
-        if (!uid) return json(res, { error: "token inconnu" }, 404);
-        try {
-            // Supprimer dossier images
-            const imgDir = path.join(IMAGES_DIR, hashUid(uid));
-            if (fs.existsSync(imgDir))
-                fs.rmSync(imgDir, { recursive: true, force: true });
-            // Supprimer meta et config
-            [metaPath(uid), configPath(uid)].forEach((p) => {
-                try {
-                    fs.unlinkSync(p);
-                } catch {}
-            });
-            // Retirer de la mémoire
-            tokenToUid.delete(token);
-            uidToToken.delete(uid);
-            userLevels.delete(uid);
-            console.log(`🗑 User supprimé: [token]`);
-            return json(res, { ok: true });
-        } catch (err) {
-            return json(res, { error: err.message }, 500);
+        if (serveFile(res, fp)) return;
+        // Fallback utile pour le mode packagé (assets embarqués snapshot).
+        const bundled = path.join(SOURCE_ROOT, pathname);
+        if (bundled.startsWith(SOURCE_ROOT) && serveFile(res, bundled)) return;
+        res.writeHead(404);
+        res.end("Not found");
+    })
+    .listen(PORT, () => {
+        console.log(`✓ HTTP → http://localhost:${PORT}/`);
+        console.log(`  ├─ Config UI : http://localhost:${PORT}/index.html`);
+        console.log(`  └─ API data  : http://localhost:${PORT}/levels`);
+        if (IS_PACKAGED) {
+            console.log(`  └─ Données utilisateur : ${DATA_ROOT}`);
         }
-    }
-
-    // Fichiers statiques
-    let pathname = url.pathname;
-    if (pathname === "/" || pathname === "") pathname = "/index.html";
-    const fp = path.join(ROOT, pathname);
-    if (!fp.startsWith(ROOT)) {
-        res.writeHead(403);
-        res.end();
-        return;
-    }
-    if (serveFile(res, fp)) return;
-    res.writeHead(404);
-    res.end("Not found");
-}).listen(PORT, () => {
-    console.log(`✓ HTTP → http://localhost:${PORT}/`);
-    console.log(`  ├─ Config UI : http://localhost:${PORT}/index.html`);
-    console.log(`  └─ API data  : http://localhost:${PORT}/levels`);
-});
+        openDefaultBrowser(`http://localhost:${PORT}/index.html`);
+    });
 
 // ════════════════════════════════════════════════════════════════
 // FFT
@@ -796,12 +875,12 @@ client.on("messageCreate", async (message) => {
 
     if (message.content === "!disconnect") {
         if (!currentConnection) return message.reply("❌ Pas connecté.");
-        currentConnection.destroy();
-        currentConnection = null;
-        connectedGuildId = null;
-        connectedChannelId = null;
-        userLevels.clear();
-        return message.reply("👋 Déconnecté.");
+        message
+            .reply("👋 Déconnecté. Fermeture de l'application...")
+            .then(() => {
+                shutdownApp();
+            });
+        return;
     }
 
     if (message.content === "!status") {
@@ -829,12 +908,8 @@ client.on("voiceStateUpdate", (oldState) => {
     setTimeout(() => {
         const ch = guild.channels.cache.get(connection.joinConfig.channelId);
         if (ch?.members.filter((m) => !m.user.bot).size === 0) {
-            connection.destroy();
-            currentConnection = null;
-            connectedGuildId = null;
-            connectedChannelId = null;
-            userLevels.clear();
-            console.log("🔇 Seul → déconnexion auto");
+            console.log("🔇 Seul → déconnexion auto et fermeture");
+            shutdownApp();
         }
     }, 5000);
 });
