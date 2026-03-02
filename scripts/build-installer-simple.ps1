@@ -208,7 +208,7 @@ $InstallerScript = $InstallerPart1 + "`n" + $Base64 + "`n" + $InstallerPart2
 $OutputFile = "dist\PNGTuberBot-Setup.ps1"
 Set-Content -Path $OutputFile -Value $InstallerScript -Encoding UTF8
 
-# Créer aussi un .bat launcher
+# Créer aussi un .bat launcher (fallback)
 $BatLauncher = @"
 @echo off
 title Installation PNGTuber Bot
@@ -217,6 +217,22 @@ powershell.exe -ExecutionPolicy Bypass -File "%~dp0PNGTuberBot-Setup.ps1"
 
 Set-Content -Path "dist\PNGTuberBot-Setup.bat" -Value $BatLauncher -Encoding ASCII
 
+# Tenter de produire un vrai installateur .exe autonome
+$SetupExe = "dist\PNGTuberBot-Setup.exe"
+$ExeBuilt = $false
+try {
+    if (-not (Get-Command Invoke-ps2exe -ErrorAction SilentlyContinue)) {
+        Write-Host "Installation du module ps2exe (CurrentUser)..." -ForegroundColor Yellow
+        Install-Module -Name ps2exe -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+        Import-Module ps2exe -ErrorAction Stop
+    }
+    Write-Host "Conversion de l'installateur en .exe..." -ForegroundColor Yellow
+    Invoke-ps2exe -inputFile $OutputFile -outputFile $SetupExe -x64 -title "PNGTuber Bot Setup" -description "Installateur autonome PNGTuber Bot" | Out-Null
+    if (Test-Path $SetupExe) { $ExeBuilt = $true }
+} catch {
+    Write-Host "⚠ Conversion .exe indisponible: $($_.Exception.Message)" -ForegroundColor DarkYellow
+}
+
 # Nettoyer
 Remove-Item $TempZip -Force
 
@@ -224,9 +240,19 @@ Write-Host "`n========================================" -ForegroundColor Green
 Write-Host "  Installateur genere avec succes !" -ForegroundColor Green
 Write-Host "========================================`n" -ForegroundColor Green
 Write-Host "Fichiers crees :" -ForegroundColor White
-Write-Host "  - dist\PNGTuberBot-Setup.ps1" -ForegroundColor Gray
-Write-Host "  - dist\PNGTuberBot-Setup.bat" -ForegroundColor Gray
-Write-Host "`nPour installer :" -ForegroundColor Yellow
-Write-Host "  1. Clic-droit sur PNGTuberBot-Setup.bat" -ForegroundColor Yellow
-Write-Host "  2. Choisir 'Executer en tant qu'administrateur'" -ForegroundColor Yellow
-Write-Host "  3. Suivre les instructions" -ForegroundColor Yellow
+if ($ExeBuilt) {
+    Write-Host "  - dist\PNGTuberBot-Setup.exe" -ForegroundColor Gray
+    Write-Host "  - dist\PNGTuberBot-Setup.ps1 (source)" -ForegroundColor Gray
+    Write-Host "  - dist\PNGTuberBot-Setup.bat (fallback)" -ForegroundColor Gray
+    Write-Host "`nPour installer :" -ForegroundColor Yellow
+    Write-Host "  1. Clic-droit sur PNGTuberBot-Setup.exe" -ForegroundColor Yellow
+    Write-Host "  2. Choisir 'Executer en tant qu'administrateur'" -ForegroundColor Yellow
+    Write-Host "  3. Suivre les instructions" -ForegroundColor Yellow
+} else {
+    Write-Host "  - dist\PNGTuberBot-Setup.ps1" -ForegroundColor Gray
+    Write-Host "  - dist\PNGTuberBot-Setup.bat" -ForegroundColor Gray
+    Write-Host "`nPour installer :" -ForegroundColor Yellow
+    Write-Host "  1. Clic-droit sur PNGTuberBot-Setup.bat" -ForegroundColor Yellow
+    Write-Host "  2. Choisir 'Executer en tant qu'administrateur'" -ForegroundColor Yellow
+    Write-Host "  3. Suivre les instructions" -ForegroundColor Yellow
+}

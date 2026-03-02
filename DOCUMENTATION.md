@@ -210,7 +210,25 @@ npm run build:exe
 
 Sortie: `dist/pngtuber-bot.exe`
 
-### 10.2 Générer l’installateur
+### 10.2 Générer l’installateur autonome (recommandé)
+
+```bash
+npm run build:installer-simple
+```
+
+Sorties:
+
+- `dist/PNGTuberBot-Setup.exe` (si `ps2exe` disponible)
+- `dist/PNGTuberBot-Setup.bat` + `dist/PNGTuberBot-Setup.ps1` (fallback)
+
+Ce setup installe automatiquement:
+
+- l’app dans `C:\Program Files\PNGTuberBot`,
+- le raccourci menu Démarrer,
+- le raccourci bureau,
+- un script de désinstallation.
+
+### 10.3 Générer l’installateur Inno Setup (optionnel)
 
 Pré-requis: **Inno Setup 6** installé sur Windows.
 
@@ -218,9 +236,9 @@ Pré-requis: **Inno Setup 6** installé sur Windows.
 npm run build:installer
 ```
 
-Sortie: `dist/pngtuber-bot-setup.exe`
+Sortie: `dist/PNGTuberBot-Setup.exe`
 
-### 10.3 Build complet
+### 10.4 Build complet
 
 ```bash
 npm run build:all
@@ -229,9 +247,9 @@ npm run build:all
 Produit les 2 exécutables:
 
 - `dist/pngtuber-bot.exe` (app)
-- `dist/pngtuber-bot-setup.exe` (installateur)
+- `dist/PNGTuberBot-Setup.exe` (installateur, quand disponible)
 
-### 10.4 Comportement au lancement
+### 10.5 Comportement au lancement
 
 Au démarrage de l’app, le serveur ouvre automatiquement dans le navigateur par défaut:
 
