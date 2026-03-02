@@ -1,102 +1,8 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="UTF-8">
-<title>Position Editor</title>
-<link rel="stylesheet" href="styles.css">
-</head>
-<body>
-
-<header>
-  <div class="logo">PNG<em>Tuber</em> · <span style="color:var(--muted)">Position Editor</span></div>
-  <span class="badge" id="state-badge">—</span>
-  <span class="badge" id="user-badge" style="background:rgba(0,217,184,0.1);border-color:rgba(0,217,184,0.3);color:var(--accent2);">—</span>
-  <span class="saved-toast" id="saved-toast">✓ Sauvegardé</span>
-  <div class="hflex ml" style="display:flex;gap:0.5rem;">
-    <button class="hbtn ghost" onclick="resetAll()">↺ Reset tout</button>
-    <button class="hbtn primary" onclick="saveAll()">✓ Sauvegarder</button>
-  </div>
-</header>
-
-<div class="workspace">
-
-  <!-- SIDEBAR -->
-  <div class="sidebar">
-    <div class="sidebar-scroll">
-
-      <!-- Canvas size -->
-      <div>
-        <div class="sec">Taille du canvas</div>
-        <div class="canvas-size-row">
-          <input type="number" id="cw" value="500" min="100" max="2000" step="10" oninput="resizeCanvas()">
-          <span>×</span>
-          <input type="number" id="ch" value="500" min="100" max="2000" step="10" oninput="resizeCanvas()">
-          <span style="color:var(--muted)">px</span>
-        </div>
-      </div>
-
-      <!-- Frames de l'état -->
-      <div>
-        <div class="sec" id="frames-sec">Frames de l'état</div>
-        <div id="frame-list" style="display:flex;flex-direction:column;gap:0.4rem;"></div>
-      </div>
-
-      <!-- Transform de la frame sélectionnée -->
-      <div id="transform-panel" style="display:none;">
-        <div class="sec">Position — <span id="selected-frame-name" style="text-transform:none;letter-spacing:0;color:var(--accent2);"></span></div>
-        <div class="transform-group">
-          <div class="tf-row">
-            <span class="tf-label">X</span>
-            <input class="tf-slider" type="range" id="sl-x" min="-500" max="500" step="1" value="0" oninput="onSliderChange('x', this.value)">
-            <span class="tf-val" id="val-x">0px</span>
-            <button class="tf-reset" onclick="resetAxis('x')" title="Reset X">↺</button>
-          </div>
-          <div class="tf-row">
-            <span class="tf-label">Y</span>
-            <input class="tf-slider" type="range" id="sl-y" min="-500" max="500" step="1" value="0" oninput="onSliderChange('y', this.value)">
-            <span class="tf-val" id="val-y">0px</span>
-            <button class="tf-reset" onclick="resetAxis('y')" title="Reset Y">↺</button>
-          </div>
-          <div class="tf-row">
-            <span class="tf-label">S</span>
-            <input class="tf-slider" type="range" id="sl-s" min="0.1" max="3" step="0.01" value="1" oninput="onSliderChange('s', this.value)">
-            <span class="tf-val" id="val-s">1.00×</span>
-            <button class="tf-reset" onclick="resetAxis('s')" title="Reset Scale">↺</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Info opacité -->
-      <div class="opacity-info">
-        🖼 <strong>Silent</strong> = fond de référence (opaque)<br>
-        Frames de l'état = semi-transparentes<br>
-        Frame <strong>sélectionnée</strong> = légèrement plus visible
-      </div>
-
-    </div>
-  </div>
-
-  <!-- CANVAS AREA -->
-  <div class="canvas-area" id="canvas-area">
-    <div class="canvas-wrap" id="canvas-wrap" style="width:500px;height:500px;">
-      <div class="crosshair"></div>
-      <!-- Silent layer (fond) -->
-      <div class="layer" id="layer-silent">
-        <img id="silent-img" src="" alt="" style="display:none;">
-      </div>
-      <!-- Layers des frames de l'état (générés dynamiquement) -->
-      <div id="layers-container"></div>
-    </div>
-  </div>
-
-</div>
-
-<script>
 // ════════════════════════════════════════════════════════════════
 // PARAMS
 // ════════════════════════════════════════════════════════════════
 const params   = new URLSearchParams(location.search);
-const USER_ID  = params.get('userId') || '';
+const USER_ID  = params.get('t') || params.get('userId') || ''; // 't' = token opaque
 const STATE    = params.get('state')  || 'low';
 const API_BASE = `http://${location.host}`;
 
@@ -127,10 +33,9 @@ let selectedFile = null;
 // ════════════════════════════════════════════════════════════════
 // LOCALSTORAGE
 // ════════════════════════════════════════════════════════════════
-const USER_SLUG = params.get('slug') || USER_ID.slice(0,8);
 function posKey(file) {
-  // Utilise le slug (pseudo) au lieu du userId Discord
-  return `pos__${USER_SLUG}__${STATE}__${file}`;
+  // Utilise le token opaque comme clé (non-réversible)
+  return `pos__${USER_ID}__${STATE}__${file}`;
 }
 
 function loadPositions() {
@@ -405,6 +310,3 @@ if (!USER_ID) {
       `<div style="color:#e74c6c;font-size:0.9rem;padding:2rem;">❌ Erreur: ${err.message}</div>`;
   });
 }
-</script>
-</body>
-</html>

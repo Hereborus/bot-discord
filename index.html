@@ -203,6 +203,29 @@
 
 <script>
 // ════════════════════════════════════════════════════════════════
+// DÉLÉGATION SYNCHRONE — js-open-pos
+// Déclarée en premier, avant tout code async, pour que le
+// navigateur considère le clic comme interaction directe.
+// Le bouton porte data-uid et data-state — pas de closure async.
+// ════════════════════════════════════════════════════════════════
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.js-open-pos');
+  if (!btn) return;
+  const uid      = btn.dataset.uid;
+  const stateKey = btn.dataset.state;
+  if (!uid || !stateKey) return;
+  const host   = document.getElementById('api-host')?.value.trim() || 'localhost:3000';
+  const saved  = localStorage.getItem('pngtuber-canvasSize');
+  const size   = saved ? JSON.parse(saved) : { w:800, h:800 };
+  const url = 'http://' + host
+    + '/positioner.html?t=' + encodeURIComponent(uid)
+    + '&state='   + encodeURIComponent(stateKey)
+    + '&w=' + size.w + '&h=' + size.h;
+  window.open(url, '_blank');
+});
+
+
+// ════════════════════════════════════════════════════════════════
 // INDEXEDDB
 // ════════════════════════════════════════════════════════════════
 // STATE & CONFIG
@@ -324,7 +347,7 @@ async function loadFramesFromServer(uid) {
 // Upload une image vers le bot (POST /upload multipart)
 async function uploadFrame(uid, stateKey, file) {
   const fd = new FormData();
-  fd.append('userId',   uid);
+  fd.append('token', uid);
   fd.append('stateKey', stateKey);
   fd.append('image',    file, file.name);
   const res  = await fetch(`${apiBase()}/upload`, { method: 'POST', body: fd });
@@ -338,7 +361,7 @@ async function deleteFrameFromServer(uid, stateKey, file) {
   await fetch(`${apiBase()}/delete-frame`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId: uid, stateKey, file }),
+    body: JSON.stringify({ token: uid, stateKey, file }),
   });
 }
 
@@ -347,7 +370,7 @@ async function saveOrderToServer(uid, stateKey, frames) {
   await fetch(`${apiBase()}/reorder`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId: uid, stateKey, order: frames.map(f => f.file) }),
+    body: JSON.stringify({ token: uid, stateKey, order: frames.map(f => f.file) }),
   });
 }
 
@@ -391,7 +414,7 @@ async function populateUserSelect(selectVal) {
 
   // 1. Users connus localement
   try {
-    const known = JSON.parse(localStorage.getItem('pngtuber-knownUsers') || '{}');
+    const known = loadKnownUsers();
     for (const [uid, info] of Object.entries(known)) users.set(uid, info.displayName || uid);
   } catch {}
 
@@ -400,7 +423,7 @@ async function populateUserSelect(selectVal) {
     const res = await fetch(`${apiBase()}/known-users`, { cache:'no-store' });
     if (res.ok) {
       const list = await res.json();
-      for (const u of list) users.set(u.userId, u.displayName || u.userId);
+      for (const u of list) users.set(u.token, u.displayName || '???');
     }
   } catch {}
 
@@ -411,7 +434,7 @@ async function populateUserSelect(selectVal) {
 
   for (const [uid, name] of users) {
     const opt = document.createElement('option');
-    opt.value = uid; opt.textContent = name + (uid !== name ? ` (${uid.slice(0,8)}…)` : '');
+    opt.value = uid; opt.textContent = name;
     sel.appendChild(opt);
   }
 
@@ -435,7 +458,7 @@ async function loadUserAudioConfig(userId) {
   } catch {
     // Fallback localStorage
     try {
-      const local = JSON.parse(localStorage.getItem(`pngtuber-audioConfig-${userId}`) || 'null');
+      const local = JSON.parse(localStorage.getItem(`pngtuber-cfg-${slugForUid(userId)}`) || 'null');
       audioConfig = mergeWithDefaults(local || {});
     } catch { audioConfig = DEFAULT_AUDIO_CONFIG(); }
     applyAudioConfigToUI();
@@ -483,8 +506,8 @@ async function onAudioUserChange(uid) {
     if (currentAudioUserId) await saveUserAudioConfig(currentAudioUserId, false);
   }
   currentAudioUserId = uid || null;
-  if (currentAudioUserId) localStorage.setItem('pngtuber-lastAudioUser', currentAudioUserId);
-  else localStorage.removeItem('pngtuber-lastAudioUser');
+  if (currentAudioUserId) localStorage.setItem('pngtuber-lastUser', slugForUid(currentAudioUserId));
+  else localStorage.removeItem('pngtuber-lastUser');
   await loadUserAudioConfig(currentAudioUserId);
 }
 
@@ -501,7 +524,7 @@ async function saveUserAudioConfig(userId, showToast=true) {
     setAudioSaveIndicator('saved');
   } catch {
     // Fallback localStorage
-    localStorage.setItem(`pngtuber-audioConfig-${userId}`, JSON.stringify(cfg));
+    localStorage.setItem(`pngtuber-cfg-${slugForUid(userId)}`, JSON.stringify(cfg));
     setAudioSaveIndicator('saved');
   }
   // BroadcastChannel pour le viewer
@@ -564,19 +587,43 @@ function renderThresholds() {
   audioConfig.thresholds.forEach((t, idx) => {
     const row = document.createElement('div');
     row.className = 'thresh-row';
-    row.innerHTML = `
-      <div class="thresh-dot" style="background:${t.color};cursor:pointer;" title="Couleur suivante"
-           onclick="cycleThreshColor(${idx})"></div>
-      <input value="${esc(t.label)}" maxlength="14"
-        style="width:74px;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:0.72rem;padding:0.15rem 0.4rem;border-radius:4px;font-family:var(--font);"
-        oninput="audioConfig.thresholds[${idx}].label=this.value; audioConfig.thresholds[${idx}].key=slugKey(this.value)||audioConfig.thresholds[${idx}].key; updateAudioStates();">
-      <input class="thresh-slider" type="range" min="-80" max="-5" step="1" value="${t.db}"
-        oninput="audioConfig.thresholds[${idx}].db=+this.value; this.nextElementSibling.textContent=this.value+' dB'; updateAudioStates();">
-      <div class="thresh-val">${t.db} dB</div>
-      <button onclick="removeThreshold(${idx})" title="Supprimer"
-        style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.75rem;padding:2px 5px;border-radius:3px;"
-        ${audioConfig.thresholds.length<=1?'disabled style="opacity:0.3;cursor:default;"':''}>✕</button>
-    `;
+
+    const dot = document.createElement('div');
+    dot.className = 'thresh-dot';
+    dot.style.cssText = 'background:' + t.color + ';cursor:pointer;';
+    dot.title = 'Couleur suivante';
+    dot.onclick = () => cycleThreshColor(idx);
+
+    const labelInp = document.createElement('input');
+    labelInp.value = t.label; labelInp.maxLength = 14;
+    labelInp.style.cssText = 'width:74px;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:0.72rem;padding:0.15rem 0.4rem;border-radius:4px;font-family:var(--font);';
+    labelInp.oninput = () => {
+      audioConfig.thresholds[idx].label = labelInp.value;
+      audioConfig.thresholds[idx].key   = slugKey(labelInp.value) || audioConfig.thresholds[idx].key;
+      updateAudioStates();
+    };
+
+    const slider = document.createElement('input');
+    slider.type = 'range'; slider.className = 'thresh-slider';
+    slider.min = -80; slider.max = -5; slider.step = 1; slider.value = t.db;
+    const valDiv = document.createElement('div');
+    valDiv.className = 'thresh-val'; valDiv.textContent = t.db + ' dB';
+    slider.oninput = () => {
+      audioConfig.thresholds[idx].db = +slider.value;
+      valDiv.textContent = slider.value + ' dB';
+      updateAudioStates();
+    };
+
+    const delBtn = document.createElement('button');
+    delBtn.title = 'Supprimer'; delBtn.textContent = '✕';
+    delBtn.style.cssText = 'background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.75rem;padding:2px 5px;border-radius:3px;';
+    if (audioConfig.thresholds.length <= 1) {
+      delBtn.disabled = true; delBtn.style.opacity = '0.3'; delBtn.style.cursor = 'default';
+    }
+    delBtn.onclick = () => removeThreshold(idx);
+
+    row.appendChild(dot); row.appendChild(labelInp);
+    row.appendChild(slider); row.appendChild(valDiv); row.appendChild(delBtn);
     list.appendChild(row);
   });
 }
@@ -631,13 +678,20 @@ const userEmotionConfig = {};
 
 function loadUserEmotionConfigs() {
   try {
-    const saved = JSON.parse(localStorage.getItem('pngtuber-userEmotions') || '{}');
-    Object.assign(userEmotionConfig, saved);
+    const raw = JSON.parse(localStorage.getItem('pngtuber-emotions') || '{}');
+    // raw keys are slugs — keep as-is, resolution via slugForUid when reading
+    Object.assign(userEmotionConfig, raw);
   } catch {}
 }
 
 function saveUserEmotionConfigs() {
-  localStorage.setItem('pngtuber-userEmotions', JSON.stringify(userEmotionConfig));
+  // Store by slug, not uid
+  const bySlug = {};
+  for (const [uid, cfg] of Object.entries(userEmotionConfig)) {
+    const slug = slugForUid(uid);
+    bySlug[slug] = cfg;
+  }
+  localStorage.setItem('pngtuber-emotions', JSON.stringify(bySlug));
 }
 
 function getUserEmotion(uid, emKey) {
@@ -714,9 +768,7 @@ function buildDualRange(container, absMin, absMax, valMin, valMax, onChange) {
 
   const makeThumb = () => {
     const t = document.createElement('div');
-    t.style.cssText = `position:absolute;top:50%;width:${THUMB_R*2}px;height:${THUMB_R*2}px;
-      background:var(--accent2);border:2px solid var(--bg2);border-radius:50%;
-      transform:translate(-50%,-50%);cursor:grab;z-index:2;transition:box-shadow 0.1s;`;
+    t.style.cssText = 'position:absolute;top:50%;width:'+(THUMB_R*2)+'px;height:'+(THUMB_R*2)+'px;background:var(--accent2);border:2px solid var(--bg2);border-radius:50%;transform:translate(-50%,-50%);cursor:grab;z-index:2;transition:box-shadow 0.1s;';
     t.addEventListener('mouseenter', () => { if (!t._drag) t.style.boxShadow='0 0 0 4px rgba(0,217,184,0.25)'; });
     t.addEventListener('mouseleave', () => { if (!t._drag) t.style.boxShadow=''; });
     return t;
@@ -819,7 +871,30 @@ function removeEmotion(idx) {
 // Les users vus en session sont sauvegardés localement en JSON
 // Ils apparaissent dans l'UI même si le bot est déconnecté
 // ════════════════════════════════════════════════════════════════
-const USERS_KEY = 'pngtuber-knownUsers';
+const USERS_KEY = 'pngtuber-users';
+
+// ── Slug : pseudo → clé localStorage sans uid visible ────────────
+// Format : slug unique dérivé du pseudo, collision gérée par suffix
+function makeSlug(name) {
+  return (name||'user').toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'').slice(0,24) || 'user';
+}
+
+// Retourne le slug associé à un uid (crée si absent)
+function slugForUid(uid) {
+  const known = loadKnownUsers();
+  return known[uid]?.slug || uid.slice(0,8);
+}
+
+// Retourne l'uid associé à un slug (null si inconnu)
+function uidFromSlug(slug) {
+  const known = loadKnownUsers();
+  for (const [uid, info] of Object.entries(known)) {
+    if (info.slug === slug) return uid;
+  }
+  return null;
+}
 
 function loadKnownUsers() {
   try { return JSON.parse(localStorage.getItem(USERS_KEY) || '{}'); } catch { return {}; }
@@ -827,11 +902,19 @@ function loadKnownUsers() {
 
 function saveKnownUser(uid, displayName) {
   const known = loadKnownUsers();
-  if (!known[uid]) {
-    known[uid] = { displayName, seenAt: Date.now() };
-    localStorage.setItem(USERS_KEY, JSON.stringify(known));
-  } else if (known[uid].displayName !== displayName) {
-    known[uid].displayName = displayName;
+  // Générer un slug unique basé sur le pseudo
+  const base = makeSlug(displayName);
+  let slug = known[uid]?.slug;
+  if (!slug) {
+    // Vérifier unicité du slug
+    const usedSlugs = Object.values(known).map(v => v.slug).filter(Boolean);
+    slug = base;
+    let n = 2;
+    while (usedSlugs.includes(slug)) slug = base + '_' + (n++);
+  }
+  const changed = !known[uid] || known[uid].displayName !== displayName;
+  if (changed) {
+    known[uid] = { displayName, slug, seenAt: Date.now() };
     localStorage.setItem(USERS_KEY, JSON.stringify(known));
   }
 }
@@ -861,7 +944,7 @@ async function loadFramesForUser(uid) {
 }
 
 async function saveAudioConfig() {
-  if (!currentAudioUserId) return toast('Sélectionne un utilisateur d'abord.');
+  if (!currentAudioUserId) return toast("Sélectionne un utilisateur d'abord.");
   await saveUserAudioConfig(currentAudioUserId, true);
 }
 
@@ -877,16 +960,20 @@ function getUserBlinkFreq(uid) {
 
 function saveBlinkConfig(uid, freqMs) {
   blinkConfig[uid] = { freqMs };
-  const all = JSON.parse(localStorage.getItem('pngtuber-blinkConfig')||'{}');
-  all[uid] = { freqMs };
-  localStorage.setItem('pngtuber-blinkConfig', JSON.stringify(all));
+  const all = JSON.parse(localStorage.getItem('pngtuber-blink')||'{}');
+  all[slugForUid(uid)] = { freqMs };
+  localStorage.setItem('pngtuber-blink', JSON.stringify(all));
   try { new BroadcastChannel('pngtuber-config').postMessage({ type: 'blinkConfig', uid, freqMs }); } catch {}
 }
 
 function loadBlinkConfigs() {
   try {
-    const all = JSON.parse(localStorage.getItem('pngtuber-blinkConfig')||'{}');
-    Object.assign(blinkConfig, all);
+    const raw    = JSON.parse(localStorage.getItem('pngtuber-blink')||'{}');
+    const known  = loadKnownUsers();
+    // raw keys sont des slugs — on mappe slug→uid pour blinkConfig[uid]
+    for (const [uid, info] of Object.entries(known)) {
+      if (info.slug && raw[info.slug]) blinkConfig[uid] = raw[info.slug];
+    }
   } catch {}
 }
 
@@ -902,10 +989,10 @@ function renderUser(uid) {
       <div class="avatar-initials">${init}</div>
       <div>
         <div class="user-dname">${esc(data.displayName||uid)}</div>
-        <div class="user-uid">${esc(uid)}</div>
       </div>
       <span class="speaking-pill" id="pill-${uid}"></span>
       <button class="obs-btn ghost" style="margin-left:auto;font-size:0.7rem;" onclick="copyViewerUrl('${uid}')">📋 URL OBS</button>
+      <button class="obs-btn ghost" style="font-size:0.7rem;color:var(--danger);border-color:var(--danger);opacity:0.7;" onclick="deleteUser('${uid}')" title="Supprimer cet utilisateur">🗑</button>
     </div>
     <div class="blink-row" style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem 1rem;border-bottom:1px solid var(--border);background:var(--bg3);">
       <span style="font-size:0.7rem;color:var(--muted);white-space:nowrap;">👁 Blink toutes les</span>
@@ -988,50 +1075,76 @@ function addStateColToUser(uid, stateKey, label) {
 }
 
 function buildStateCol(uid, stateKey, frames) {
-  const isClosed      = isClosedState(stateKey);
-  const isEmSilent    = isEmotionSilent(stateKey);
-  const base          = baseState(stateKey);
-  const emLabel       = audioConfig.emotions.find(e=>e.key===base||e.key===stateKey)?.label;
+  const isClosed   = isClosedState(stateKey);
+  const isEmSilent = isEmotionSilent(stateKey);
+  const base       = baseState(stateKey);
+  const emLabel    = audioConfig.emotions.find(e=>e.key===base||e.key===stateKey)?.label;
   let label;
   if (isClosed)        label = (emLabel||base).toUpperCase() + ' 👁';
   else if (isEmSilent) label = (emLabel||base).toUpperCase() + ' (silence)';
   else                 label = emLabel || (stateKey.charAt(0).toUpperCase()+stateKey.slice(1));
-  const borderStyle = (isClosed||isEmSilent)
+
+  const col = document.createElement('div');
+  col.className = 'state-col';
+  col.dataset.state = stateKey;
+  col.style.borderTop = (isClosed||isEmSilent)
     ? `2px dashed ${stateColor(stateKey)}`
     : `2px solid ${stateColor(stateKey)}`;
-  const col = document.createElement('div');
-  col.className = 'state-col'; col.dataset.state = stateKey;
-  col.style.borderTop = borderStyle;
   if (isClosed) col.style.opacity = '0.8';
-  col.innerHTML = `
-    <div class="state-col-title">
-      <div class="sdot" style="background:${stateColor(stateKey)};${isClosed?'border:1px solid var(--border);':''}" ></div>
-      <span style="${isClosed?'font-style:italic;font-size:0.6rem;':''}">${esc(label.toUpperCase())}</span>
-      ${!isClosed ? `<button class="pos-btn" data-uid="${uid}" data-state="${stateKey}" title="Régler la position des frames"
-        style="margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.7rem;padding:1px 3px;border-radius:3px;">📐</button>` : ''}
-    </div>
-    <div class="frames-list" id="fl-${uid}-${stateKey}"></div>
-    <button class="add-frame-btn">
-      <input type="file" accept="image/*" multiple>
-      + frame(s)
-    </button>
-  `;
-  const list   = col.querySelector(`#fl-${uid}-${stateKey}`);
-  const addbtn = col.querySelector('.add-frame-btn');
-  const input  = col.querySelector('input[type=file]');
+
+  // ── Titre ──────────────────────────────────────────────────────
+  const title = document.createElement('div');
+  title.className = 'state-col-title';
+
+  const dot = document.createElement('div');
+  dot.className = 'sdot';
+  dot.style.background = stateColor(stateKey);
+  if (isClosed) dot.style.border = '1px solid var(--border)';
+
+  const lbl = document.createElement('span');
+  if (isClosed) { lbl.style.fontStyle = 'italic'; lbl.style.fontSize = '0.6rem'; }
+  lbl.textContent = label.toUpperCase();
+
+  title.appendChild(dot);
+  title.appendChild(lbl);
+
+  // Bouton positioner — data-* lu par délégation synchrone au top level
+  if (!isClosed && !isEmSilent) {
+    const posBtn = document.createElement('button');
+    posBtn.className   = 'js-open-pos';
+    posBtn.title       = 'Régler la position des frames';
+    posBtn.textContent = '📐';
+    posBtn.dataset.uid   = uid;
+    posBtn.dataset.state = stateKey;
+    posBtn.style.cssText = 'margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.7rem;padding:1px 3px;border-radius:3px;';
+    title.appendChild(posBtn);
+  }
+
+  // ── Liste frames ───────────────────────────────────────────────
+  const list = document.createElement('div');
+  list.className = 'frames-list';
+  list.id = `fl-${uid}-${stateKey}`;
+
+  // ── Bouton add frame ───────────────────────────────────────────
+  const addbtn = document.createElement('button');
+  addbtn.className = 'add-frame-btn';
+  addbtn.textContent = '+ frame(s)';
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
+  input.style.display = 'none';
+  addbtn.appendChild(input);
+
+  col.appendChild(title);
+  col.appendChild(list);
+  col.appendChild(addbtn);
+
   for (const f of frames) list.appendChild(buildFrameItem(uid, stateKey, f));
   enableDrag(list, uid, stateKey);
-  addbtn.addEventListener('click', e => { if (e.target!==input) input.click(); });
+  addbtn.addEventListener('click', () => input.click());
   input.addEventListener('change', e => handleUpload(uid, stateKey, e.target.files));
   return col;
 }
 
-// Délégation d'événement pour les boutons 📐 (évite les conflits de guillemets dans les templates)
-document.addEventListener('click', e => {
-  const btn = e.target.closest('.pos-btn');
-  if (!btn) return;
-  openPositioner(btn.dataset.uid, btn.dataset.state);
-});
 
 function buildFrameItem(uid, stateKey, frame) {
   const item = document.createElement('div');
@@ -1094,18 +1207,38 @@ async function handleUpload(uid, stateKey, files) {
 // ════════════════════════════════════════════════════════════════
 function viewerUrl(userId) {
   const host = document.getElementById('api-host').value.trim() || 'localhost:3000';
-  return `http://${host}/viewer.html?userId=${userId}&sourceUrl=http://${host}/levels`;
+  return `http://${host}/viewer.html?t=${userId}`;
 }
 
 function copyViewerUrl(userId) {
   const url = viewerUrl(userId);
-  navigator.clipboard.writeText(url).then(() => toast(`URL copiée pour ${configData[userId]?.displayName || userId}`));
+  navigator.clipboard.writeText(url).then(() => toast(`URL copiée pour ${configData[userId]?.displayName || 'cet utilisateur'}`));
 }
 
 // Modal URL générique (bouton header)
+async function deleteUser(uid) {
+  const name = configData[uid]?.displayName || 'cet utilisateur';
+  if (!confirm(`Supprimer toutes les données de ${name} ?\nImages, config audio, expressions — tout sera effacé.`)) return;
+  try {
+    const res = await fetch(`${apiBase()}/delete-user/${uid}`, { method:'POST' });
+    if (!res.ok) { const e=await res.json().catch(()=>({})); return toast('Erreur: '+(e.error||res.status)); }
+    delete configData[uid];
+    document.getElementById(`user-${uid}`)?.remove();
+    const sel = document.getElementById('audio-user-select');
+    sel?.querySelector(`option[value="${uid}"]`)?.remove();
+    if (currentAudioUserId === uid) { currentAudioUserId = null; setAudioSaveIndicator('none'); }
+    const known = loadKnownUsers();
+    delete known[uid];
+    localStorage.setItem(USERS_KEY, JSON.stringify(known));
+    try { localStorage.removeItem(`pngtuber-cfg-${slugForUid(uid)}`); } catch {}
+    toast(`✓ ${name} supprimé`);
+  } catch(err) { toast('Erreur: '+err.message); }
+}
+
+
 function openModal() {
   const host = document.getElementById('api-host').value.trim() || 'localhost:3000';
-  document.getElementById('modal-url').textContent = `http://${host}/viewer.html?userId=DISCORD_USER_ID&sourceUrl=http://${host}/levels`;
+  document.getElementById('modal-url').textContent = `http://${host}/viewer.html?t=VOTRE_TOKEN`;
   document.getElementById('modal').classList.add('open');
 }
 function closeModal() { document.getElementById('modal').classList.remove('open'); }
@@ -1150,10 +1283,13 @@ function toast(msg) {
   await populateUserSelect();
 
   // Sélectionner automatiquement le dernier user édité si disponible
-  const lastUser = localStorage.getItem('pngtuber-lastAudioUser');
-  if (lastUser) {
-    document.getElementById('audio-user-select').value = lastUser;
-    await onAudioUserChange(lastUser);
+  const lastSlug = localStorage.getItem('pngtuber-lastUser');
+  if (lastSlug) {
+    const lastUid = uidFromSlug(lastSlug);
+    if (lastUid) {
+      document.getElementById('audio-user-select').value = lastUid;
+      await onAudioUserChange(lastUid);
+    }
   }
 
   await pollApi();
@@ -1291,10 +1427,18 @@ async function saveToken() {
   }
 }
 
+function buildPositionerUrl(uid, stateKey) {
+  const host  = document.getElementById('api-host').value.trim() || 'localhost:3000';
+  const saved = localStorage.getItem('pngtuber-canvasSize');
+  const { w: cw, h: ch } = saved ? JSON.parse(saved) : { w: 800, h: 800 };
+  const slug  = slugForUid(uid);
+  return `http://${host}/positioner.html?t=${encodeURIComponent(uid)}&state=${encodeURIComponent(stateKey)}&w=${cw}&h=${ch}`;
+}
+
 function openPositioner(uid, stateKey) {
-  const host = document.getElementById('api-host').value.trim() || 'localhost:3000';
-  const cw   = 500, ch = 500;
-  window.open(`http://${host}/positioner.html?userId=${uid}&state=${stateKey}&w=${cw}&h=${ch}`, '_blank');
+  const url = buildPositionerUrl(uid, stateKey);
+  const win = window.open(url, '_blank');
+  if (!win) toast('Pop-up bloqué — autorise les pop-ups pour ce site.');
 }
 
 // Charger le statut bot au démarrage et toutes les 5s

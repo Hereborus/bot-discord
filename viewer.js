@@ -6,30 +6,40 @@
  * et leurs états audio avec transitions d'image fluides.
  *
  * RESPONSABILITÉS:
- * - Récupérer les données audio de l'API /levels
+ * - Récupérer les données audio de l'API /levels/:token
  * - Gérer les transitions d'état (silent, low, medium, high)
  * - Afficher les images appropriées basées sur l'état
  * - Animer le clignement des yeux pour l'état "silent"
  * - Afficher les métadonnées (dB, fréquences, emotion)
  *
  * QUERY PARAMETERS:
- * - ?sourceUrl=http://localhost:3000/levels  : URL de l'API (default: localhost:3000)
- * - ?imagesBase=./pnjtuber                   : Chemin de base des images
+ * - ?sourceUrl=http://localhost:3000  : Base URL de l'API (default: localhost:3000)
+ * - ?imagesBase=./pnjtuber             : Chemin de base des images
+ *
+ * TOKEN:
+ * - Injecté par le serveur via window.__VIEWER_TOKEN__ (route /viewer/:token)
+ * - Ou passé en query param ?token=xxx
  */
 
 // ============================================================================
 // CONFIGURATION & STATE
 // ============================================================================
 
-/**
- * Query parameters pour personnaliser le comportement
- */
-const sourceUrl =
-    new URLSearchParams(location.search).get("sourceUrl") ||
-    "http://localhost:3000/levels";
-const imagesBase =
-    new URLSearchParams(location.search).get("imagesBase") || "./pnjtuber";
-const pollInterval = 80; // ms between API fetches
+const params = new URLSearchParams(location.search);
+
+// Token: priorité à window.__VIEWER_TOKEN__ (injecté serveur), sinon query param
+const viewerToken = (typeof window.__VIEWER_TOKEN__ !== "undefined" && window.__VIEWER_TOKEN__)
+    || params.get("token")
+    || null;
+
+const baseUrl = params.get("sourceUrl") || "http://localhost:3000";
+const imagesBase = params.get("imagesBase") || "./pnjtuber";
+const pollInterval = 200; // ms between API fetches
+
+// Construction de l'URL d'API selon présence du token
+const sourceUrl = viewerToken
+    ? `${baseUrl}/levels/${viewerToken}`
+    : `${baseUrl}/levels`;
 
 const grid = document.getElementById("grid");
 
@@ -66,6 +76,7 @@ function getImagePath(userId, status, emotion) {
     const subdir = status === "high" && emotion ? emotion : status;
     return `${imagesBase}/user${userId}/${status}/${subdir}.png`;
 }
+
 /**
  * Résoudre les deux images pour l'animation de clignement (silent)
  * on.png: yeux ouverts
@@ -87,7 +98,7 @@ function getBlinkImagePaths(userId) {
 
 /**
  * Démarrer l'animation de clignement pour l'état "silent"
- * Alterne entre on.png (yeux ouverts) et off.png (yeux fermés) toutes les 850ms
+ * Alterne entre on.png (yeux ouverts) et off.png (yeux fermés) toutes les 300ms
  *
  * @param {HTMLImageElement} imgElement - Image element à animer
  * @param {string} userId - ID utilisateur
@@ -105,7 +116,7 @@ function startBlinkAnimation(imgElement, userId) {
     const intervalId = setInterval(() => {
         isOn = !isOn;
         imgElement.src = isOn ? paths.on : paths.off;
-    }, 3500);
+    }, 300);
 
     return {
         intervalId,
@@ -335,5 +346,5 @@ setInterval(update, pollInterval);
 update();
 
 console.log(
-    `✓ Audio Viewer initialized (sourceUrl: ${sourceUrl}, imagesBase: ${imagesBase})`,
+    `✓ Audio Viewer initialized (token: ${viewerToken || "none (mode global)"}, sourceUrl: ${sourceUrl}, imagesBase: ${imagesBase})`,
 );
