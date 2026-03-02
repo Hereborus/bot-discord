@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="fr">
+    <head>
+        <meta charset="UTF-8" />
+        <title>PNGTuber Viewer</title>
+        <link rel="stylesheet" href="styles.css" />
+    </head>
+    <body>
+        <div id="stage"></div>
+        <div id="err"></div>
+        <script>
+            // ════════════════════════════════════════════════════════════════
+            // PARAMS
+            // ════════════════════════════════════════════════════════════════
+            const params = new URLSearchParams(location.search);
+            const FILTER_UID = params.get("userId") || null;
+            const SOURCE_URL =
+                params.get("sourceUrl") || `http://${location.host}/levels`;
+            const API_BASE = SOURCE_URL.replace("/levels", "");
+            const POLL_MS = Math.max(
+                50,
+                parseInt(params.get("poll") || "100", 10),
+            );
+            const AVATAR_SIZE = params.get("size") || "200px";
+            const BLINK_DURATION_MS = 150;
+
+            document.documentElement.style.setProperty(
+                "--avatar-size",
+                AVATAR_SIZE,
+            );
+            // Le viewer supporte 2 modes:
+            // 1) global: tous les users renvoyés par /levels
+            // 2) filtré: un seul user via ?userId=...
+
+            // ════════════════════════════════════════════════════════════════
+            // ÉTATS + FALLBACK
+            // ════════════════════════════════════════════════════════════════
+            function getAudioStates() {
+                return [
+                    "silent",
+                    ...[...audioConfig.thresholds]
+                        .sort((a, b) => a.db - b.db)
+                        .map((t) => t.key),
+                ];
+            }
+            function getFallbackChain() {
+                // Fallback descendant: si un état n'a pas de frame, on redescend vers un état inférieur.
+                // Exemple: high -> medium -> low -> silent.
+                const s = [...audioConfig.thresholds]
+                    .sort((a, b) => a.db - b.db)
+                    .map((t) => t.key);
+                const c = { silent: null };
+                s.forEach((k, i) => {
+                    c[k] = i === 0 ? "silent" : s[i - 1];
+                });
+                return c;
+            }
+            function isClosedState(key) {
+                return key.endsWith("_closed");
+            }
+            function baseState(key) {
+                return key.replace(/_closed$|_silent$/, "");
+            }
+            function closedVariant(key) {
+                return key + "_closed";
+            }
+            function isAudioState(key) {
+                return getAudioStates().includes(key);
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // CONFIG AUDIO + BLINK (localStorage)
+            // ════════════════════════════════════════════════════════════════
+            let audioConfig = {
+                thresholds: [
+                    { key: "low", label: "Low", db: -55, color: "#4a90e2" },
+                    {
+                        key: "medium",
+                        label: "Medium",
+                        db: -35,
+                        color: "#f0a500",
+                    },
+                    { key: "high", label: "High", db: -15, color: "#e74c6c" },
+                ],
+                emotionHoldMs: 800,
+                frameSpeed: 150,
+                emotions: [
+                    {
+                        key: "anger",
+                        label: "Anger",
+                        minStatus: "medium",
+                        freqMin: 80,
+                        freqMax: 300,
+                        sensitivity: 1.2,
+                    },
+                    {
+                        key: "scream",
+                        label: "Scream",
+                        minStatus: "high",
+                        freqMin: 800,
+                        freqMax: 4000,
+                        sensitivity: 1.5,
+                    },
+                ],
+            };
+            const blinkConfig = {};
+
+            async function loadConfigs() {
+                // Charger la config depuis le bot pour ce userId spécifique
+                const params = new URLSearchParams(location.search);
+                const uid = params.get("t") || params.get("userId"); // 't' = token opaque
+                if (uid) {
+                    try {
+                        const port = params.get("port") || "3000";
+                        const res = await fetch(
+                            `http://localhost:${port}/user-config/${uid}`,
+                            { cache: "no-store" },
+                        );
+                        if (res.ok) {
+                            const data = await res.json();
+                            if (data && Object.keys(data).length) {
+                                audioConfig = { ...audioConfig, ...data };
+                            }
+                        }
+                    } catch {}
+                }
+                // Fallback localStorage (rétrocompat): utile quand l'API locale n'est pas joignable.
+                try {
+                    const a =
+                        localStorage.getItem(`pngtuber-audioConfig-${uid}`) ||
+                        localStorage.getItem("pngtuber-audioConfig");
+                    if (a) {
+                        const p = JSON.parse(a);
+                        audioConfig = { ...audioConfig, ...p };
+                    }
+                } catch {}
+                try {
+                    Object.assign(
+                        blinkConfig,
+                        JSON.parse(
+                            localStorage.getItem("pngtuber-blinkConfig") ||
+                                "{}",
+                        ),
+                    );
+                } catch {}
+            }
+
+            try {
+                const bc = new BroadcastChannel("pngtuber-config");
+                bc.onmessage = (e) => {
+                    if (e.data?.type === "audioConfig") {
+                        const params = new URLSearchParams(location.search);
+                        const myUid = params.get("userId");
+                        // Appliquer si pas de userId ciblé ou si c'est notre userId
+                        if (!e.data.userId || e.data.userId === myUid) {
+                            audioConfig = { ...audioConfig, ...e.data.data };
+                            Object.keys(frameCache).forEach(
+                                (k) => delete frameCache[k],
+                            );
+                        }
+                    }
+                    if (e.data?.type === "blinkConfig") {
+                        const { uid, freqMs } = e.data;
+                        blinkConfig[uid] = { freqMs };
+                        resetBlinkTimer(uid);
+                    }
+                };
+            } catch {}
+
+            // ════════════════════════════════════════════════════════════════
+            // POSITIONS (localStorage — par userId, state, file)
+            // ════════════════════════════════════════════════════════════════
+            function getPosition(userId, stateKey, file) {
+                try {
+                    const s = localStorage.getItem(
+                        `pos__${userId}__${stateKey}__${file}`,
+                    );
+                    return s ? JSON.parse(s) : { x: 0, y: 0, s: 1 };
+                } catch {
+                    return { x: 0, y: 0, s: 1 };
+                }
+            }
+
+            try {
+                const bcp = new BroadcastChannel("pngtuber-positions");
+                bcp.onmessage = (e) => {
+                    const { userId, state } = e.data || {};
+                    if (userId && state) {
+                        // Vider le cache img pour forcer recréation avec nouvelles positions
+                        const av = avatars[userId];
+                        if (av) {
+                            Object.values(av.imgMap).forEach((img) =>
+                                img.remove(),
+                            );
+                            av.imgMap = {};
+                        }
+                    }
+                };
+            } catch {}
+
+            // ════════════════════════════════════════════════════════════════
+            // CLASSIFICATION
+            // ════════════════════════════════════════════════════════════════
+            function classifyStatus(db) {
+                // Classification déterministe: on prend le plus haut seuil franchi par db.
+                const sorted = [...audioConfig.thresholds].sort(
+                    (a, b) => a.db - b.db,
+                );
+                let s = "silent";
+                for (const t of sorted) {
+                    if (db >= t.db) s = t.key;
+                }
+                return s;
+            }
+
+            function detectEmotion(status, freq) {
+                // Détection heuristique (pas ML): compare l'énergie de la plage cible
+                // d'une émotion à l'énergie hors plage, pondérée par la sensibilité.
+                if (!freq || status === "silent") return null;
+                const states = getAudioStates();
+                for (const em of audioConfig.emotions) {
+                    if (states.indexOf(status) < states.indexOf(em.minStatus))
+                        continue;
+                    // Calculer l'énergie dans la plage freqMin–freqMax
+                    // freq est un objet { low, mid, high } → on fait une correspondance approximative
+                    // low ≈ 0–300Hz, mid ≈ 300–2000Hz, high ≈ 2000–8000Hz
+                    const bandEnergy = (fMin, fMax) => {
+                        let e = 0;
+                        if (fMax > 0 && fMin < 300)
+                            e +=
+                                (freq.low || 0) *
+                                Math.min(
+                                    1,
+                                    (Math.min(fMax, 300) - Math.max(fMin, 0)) /
+                                        300,
+                                );
+                        if (fMax > 300 && fMin < 2000)
+                            e +=
+                                (freq.mid || 0) *
+                                Math.min(
+                                    1,
+                                    (Math.min(fMax, 2000) -
+                                        Math.max(fMin, 300)) /
+                                        1700,
+                                );
+                        if (fMax > 2000 && fMin < 8000)
+                            e +=
+                                (freq.high || 0) *
+                                Math.min(
+                                    1,
+                                    (Math.min(fMax, 8000) -
+                                        Math.max(fMin, 2000)) /
+                                        6000,
+                                );
+                        return e;
+                    };
+                    const target = bandEnergy(em.freqMin, em.freqMax);
+                    const others = [
+                        bandEnergy(0, em.freqMin),
+                        bandEnergy(em.freqMax, 20000),
+                    ].filter((v) => v > 0);
+                    if (
+                        others.length === 0 ||
+                        others.every((v) => target > v * em.sensitivity)
+                    )
+                        return em.key;
+                }
+                return null;
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // FRAME CACHE
+            // frameCache[uid__state] = [{url, file}, ...]
+            // ════════════════════════════════════════════════════════════════
+            const frameCache = {};
+            const closedAvail = {}; // uid → { stateKey → bool }
+
+            async function fetchUserFrames(uid) {
+                try {
+                    const res = await fetch(`${API_BASE}/frames/${uid}`, {
+                        cache: "no-store",
+                    });
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    closedAvail[uid] = {};
+                    for (const [state, frames] of Object.entries(data)) {
+                        // Cache mémoire des frames pour éviter de re-fetch à chaque poll audio.
+                        frameCache[`${uid}__${state}`] = frames.map((f) => ({
+                            url: `${API_BASE}${f.url}`,
+                            file: f.file,
+                        }));
+                        if (isClosedState(state) && frames.length > 0)
+                            closedAvail[uid][baseState(state)] = true;
+                    }
+                } catch {}
+            }
+
+            function resolveFrames(uid, stateKey) {
+                // Résolution robuste:
+                // - état émotion/normal direct
+                // - état closed avec fallback sur les closed disponibles
+                // - état audio avec fallback vers états plus bas
+                const FALLBACK = getFallbackChain();
+                if (!isAudioState(stateKey) && !isClosedState(stateKey)) {
+                    return frameCache[`${uid}__${stateKey}`] || [];
+                }
+                if (isClosedState(stateKey)) {
+                    let cur = baseState(stateKey);
+                    while (cur) {
+                        const f = frameCache[`${uid}__${closedVariant(cur)}`];
+                        if (f?.length) return f;
+                        cur = FALLBACK[cur];
+                    }
+                    return [];
+                }
+                let cur = stateKey;
+                while (cur) {
+                    const f = frameCache[`${uid}__${cur}`];
+                    if (f?.length) return f;
+                    cur = FALLBACK[cur];
+                }
+                return [];
+            }
+
+            try {
+                const bc2 = new BroadcastChannel("pngtuber-frames");
+                bc2.onmessage = async (e) => {
+                    const { uid } = e.data || {};
+                    if (uid) {
+                        Object.keys(frameCache)
+                            .filter((k) => k.startsWith(uid + "__"))
+                            .forEach((k) => delete frameCache[k]);
+                        await fetchUserFrames(uid);
+                    } else
+                        Object.keys(frameCache).forEach(
+                            (k) => delete frameCache[k],
+                        );
+                };
+            } catch {}
+
+            // ════════════════════════════════════════════════════════════════
+            // DOM AVATARS — multi-layers avec positions
+            // ════════════════════════════════════════════════════════════════
+            const stage = document.getElementById("stage");
+            const avatars = {}; // uid → { el, imgMap:{url→img} }
+
+            function ensureAvatar(uid) {
+                if (avatars[uid]) return;
+                const el = document.createElement("div");
+                el.className = "avatar";
+                el.id = `av-${uid}`;
+                stage.appendChild(el);
+                avatars[uid] = { el, imgMap: {} };
+                flipbooks[uid] = {
+                    intervalId: null,
+                    frames: [],
+                    idx: 0,
+                    activeKey: null,
+                    stateKey: null,
+                };
+            }
+
+            function removeAvatar(uid) {
+                stopFlipbook(uid);
+                stopBlinkTimer(uid);
+                avatars[uid]?.el.remove();
+                delete avatars[uid];
+                delete flipbooks[uid];
+                delete userStates[uid];
+                delete closedAvail[uid];
+            }
+
+            function getOrCreateImg(uid, url, file, stateKey) {
+                const av = avatars[uid];
+                if (!av) return null;
+                if (av.imgMap[url]) return av.imgMap[url];
+                const img = document.createElement("img");
+                img.className = "avatar-frame";
+                img.src = url;
+                // La position est appliquée à la création puis réappliquée lors du switch d'image.
+                const pos = getPosition(uid, stateKey, file);
+                img.style.transform = `translate(${pos.x}px,${pos.y}px) scale(${pos.s})`;
+                av.el.appendChild(img);
+                av.imgMap[url] = img;
+                return img;
+            }
+
+            function setAvatarFrame(uid, url, file, stateKey) {
+                const av = avatars[uid];
+                if (!av) return;
+                Object.values(av.imgMap).forEach((i) =>
+                    i.classList.remove("vis"),
+                );
+                if (!url) return;
+                const img = getOrCreateImg(uid, url, file, stateKey);
+                if (!img) return;
+                if (file && stateKey) {
+                    const pos = getPosition(uid, stateKey, file);
+                    img.style.transform = `translate(${pos.x}px,${pos.y}px) scale(${pos.s})`;
+                }
+                img.classList.add("vis");
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // FLIPBOOK ENGINE
+            // ════════════════════════════════════════════════════════════════
+            const flipbooks = {};
+
+            function startFlipbook(uid, frames, stateKey) {
+                const speed = audioConfig.frameSpeed || 150;
+                const key = frames.map((f) => f.url).join("|");
+                const fb = flipbooks[uid];
+                if (!fb) return;
+                // Si la séquence active est déjà la bonne, on ne redémarre pas l'interval.
+                if (fb.activeKey === key && fb.intervalId) return;
+                stopFlipbook(uid);
+                fb.frames = frames;
+                fb.stateKey = stateKey;
+                fb.activeKey = key;
+                fb.idx = 0;
+                if (!frames.length) {
+                    setAvatarFrame(uid, null, null, stateKey);
+                    return;
+                }
+                setAvatarFrame(uid, frames[0].url, frames[0].file, stateKey);
+                if (frames.length === 1) return;
+                fb.intervalId = setInterval(() => {
+                    fb.idx = (fb.idx + 1) % fb.frames.length;
+                    const f = fb.frames[fb.idx];
+                    setAvatarFrame(uid, f.url, f.file, fb.stateKey);
+                }, speed);
+            }
+
+            function stopFlipbook(uid) {
+                const fb = flipbooks[uid];
+                if (!fb) return;
+                if (fb.intervalId) {
+                    clearInterval(fb.intervalId);
+                    fb.intervalId = null;
+                }
+                fb.activeKey = null;
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // BLINK ENGINE
+            // ════════════════════════════════════════════════════════════════
+            const blinkTimers = {};
+
+            function startBlinkTimer(uid) {
+                stopBlinkTimer(uid);
+                // Blink activé seulement si au moins une variante *_closed existe.
+                const hasClosed = Object.values(closedAvail[uid] || {}).some(
+                    (v) => v,
+                );
+                if (!hasClosed) return;
+                const freqMs = blinkConfig[uid]?.freqMs ?? 4000;
+                blinkTimers[uid] = {
+                    blinking: false,
+                    timerId: setInterval(() => triggerBlink(uid), freqMs),
+                };
+            }
+
+            function stopBlinkTimer(uid) {
+                const bt = blinkTimers[uid];
+                if (!bt) return;
+                clearInterval(bt.timerId);
+                delete blinkTimers[uid];
+            }
+
+            function resetBlinkTimer(uid) {
+                if (blinkTimers[uid]) startBlinkTimer(uid);
+            }
+
+            async function triggerBlink(uid) {
+                const bt = blinkTimers[uid];
+                if (!bt || bt.blinking) return;
+                const us = userStates[uid];
+                if (!us) return;
+                const currentState = us.displayKey;
+                if (!isAudioState(currentState)) return;
+                const closedFrames = resolveFrames(
+                    uid,
+                    closedVariant(currentState),
+                );
+                if (!closedFrames.length) return;
+                bt.blinking = true;
+                const fb = flipbooks[uid];
+                // Snapshot du flipbook courant pour le restaurer après le blink.
+                const prevFrames = fb?.frames || [];
+                const prevState = fb?.stateKey || currentState;
+                stopFlipbook(uid);
+                setAvatarFrame(
+                    uid,
+                    closedFrames[0].url,
+                    closedFrames[0].file,
+                    closedVariant(currentState),
+                );
+                await new Promise((r) => setTimeout(r, BLINK_DURATION_MS));
+                if (userStates[uid]?.displayKey === currentState)
+                    startFlipbook(uid, prevFrames, prevState);
+                bt.blinking = false;
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // HOLD ÉMOTION
+            // ════════════════════════════════════════════════════════════════
+            const userStates = {};
+
+            function resolveDisplayKey(uid, status, emotion) {
+                // Hold émotion: maintient l'expression quelques ms pour éviter un clignotement visuel trop nerveux.
+                const s = userStates[uid];
+                const now = Date.now();
+                if (s.holdUntil && now < s.holdUntil && s.lastEmotion)
+                    return s.lastEmotion;
+                if (s.holdUntil && now >= s.holdUntil) {
+                    s.holdUntil = null;
+                    s.lastEmotion = null;
+                }
+                if (emotion) {
+                    s.lastEmotion = emotion;
+                    s.holdUntil = now + audioConfig.emotionHoldMs;
+                    return emotion;
+                }
+                return status;
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // UPDATE PAR USER
+            // ════════════════════════════════════════════════════════════════
+            async function applyUser(uid, info) {
+                ensureAvatar(uid);
+                if (!closedAvail[uid]) {
+                    await fetchUserFrames(uid);
+                    startBlinkTimer(uid);
+                }
+                if (!userStates[uid])
+                    userStates[uid] = {
+                        displayKey: null,
+                        holdUntil: null,
+                        lastEmotion: null,
+                    };
+
+                // Pipeline rendu: db -> status -> emotion -> displayKey -> frames -> flipbook.
+                const status = classifyStatus(info.db ?? -100);
+                const emotion = info.speaking
+                    ? detectEmotion(status, info.freq)
+                    : null;
+                const displayKey = resolveDisplayKey(uid, status, emotion);
+
+                if (displayKey !== userStates[uid].displayKey) {
+                    userStates[uid].displayKey = displayKey;
+                    const frames = resolveFrames(uid, displayKey);
+                    startFlipbook(uid, frames, displayKey);
+                }
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // POLL
+            // ════════════════════════════════════════════════════════════════
+            async function poll() {
+                try {
+                    // no-store pour éviter tout cache navigateur sur les niveaux temps réel.
+                    const res = await fetch(SOURCE_URL, { cache: "no-store" });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const data = await res.json();
+                    hideErr();
+                    let ids = Object.keys(data).filter((k) => k !== "_bot");
+                    if (FILTER_UID) ids = ids.filter((id) => id === FILTER_UID);
+                    for (const uid of ids) await applyUser(uid, data[uid]);
+                    for (const uid of Object.keys(avatars)) {
+                        if (!ids.includes(uid)) removeAvatar(uid);
+                    }
+                } catch (err) {
+                    showErr(`${err.message} — ${SOURCE_URL}`);
+                }
+            }
+
+            const errEl = document.getElementById("err");
+            function showErr(msg) {
+                errEl.textContent = msg;
+                errEl.classList.add("on");
+            }
+            function hideErr() {
+                errEl.classList.remove("on");
+            }
+
+            loadConfigs().then(() => {
+                /* init done */
+            });
+            setInterval(poll, POLL_MS);
+            poll();
+        </script>
+    </body>
+</html>

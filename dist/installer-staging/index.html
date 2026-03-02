@@ -1,0 +1,2362 @@
+<!doctype html>
+<html lang="fr">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>PNGTuber Config</title>
+        <link rel="stylesheet" href="styles.css" />
+    </head>
+    <body>
+        <!-- ══ HEADER ═══════════════════════════════════════════════════ -->
+        <header>
+            <div class="logo">PNG<em>Tuber</em></div>
+
+            <div class="api-row">
+                <span class="api-dot" id="api-dot"></span>
+                <label>BOT</label>
+                <input
+                    class="api-input"
+                    id="api-host"
+                    value="localhost:3000"
+                    placeholder="localhost:3000" />
+            </div>
+
+            <div class="hflex ml">
+                <button class="obs-btn ghost" onclick="openModal()">
+                    URL OBS
+                </button>
+                <button class="obs-btn" onclick="openViewer()">▶ Viewer</button>
+            </div>
+        </header>
+
+        <!-- ══ TABS ══════════════════════════════════════════════════════ -->
+        <div class="tabs-bar">
+            <button class="tab-btn active" onclick="switchTab('avatars', this)">
+                🎭 Avatars
+            </button>
+            <button class="tab-btn" onclick="switchTab('audio', this)">
+                🎙 Audio Config
+            </button>
+            <button
+                class="tab-btn"
+                onclick="switchTab('setup', this)"
+                id="tab-setup">
+                ⚙️ Bot Setup
+            </button>
+        </div>
+
+        <!-- ══ PANEL: AVATARS ════════════════════════════════════════════ -->
+        <div class="panel active" id="panel-avatars">
+            <div id="empty-state" class="empty-state">
+                <div class="icon">🎙️</div>
+                <p>
+                    Lance le bot et tape <code>!join</code> dans Discord.<br />Les
+                    membres du canal apparaîtront ici.
+                </p>
+            </div>
+            <div
+                id="users-container"
+                style="display: flex; flex-direction: column; gap: 1rem"></div>
+        </div>
+
+        <!-- ══ PANEL: AUDIO CONFIG ══════════════════════════════════════ -->
+        <div class="panel" id="panel-audio">
+            <!-- Sélecteur de user -->
+            <div
+                style="
+                    display: flex;
+                    align-items: center;
+                    gap: 0.75rem;
+                    padding: 0.6rem 0.85rem;
+                    background: var(--bg3);
+                    border: 1px solid var(--border);
+                    border-radius: var(--r);
+                    max-width: 520px;
+                ">
+                <span
+                    style="
+                        font-size: 0.75rem;
+                        color: var(--muted);
+                        white-space: nowrap;
+                    "
+                    >🎙 Utilisateur</span
+                >
+                <select
+                    id="audio-user-select"
+                    onchange="onAudioUserChange(this.value)"
+                    style="
+                        flex: 1;
+                        background: var(--bg2);
+                        border: 1px solid var(--border);
+                        color: var(--text);
+                        font-family: var(--font);
+                        font-size: 0.8rem;
+                        padding: 0.3rem 0.5rem;
+                        border-radius: 5px;
+                        cursor: pointer;
+                    ">
+                    <option value="">— Sélectionner un utilisateur —</option>
+                </select>
+                <span
+                    id="audio-save-indicator"
+                    title=""
+                    style="font-size: 0.65rem; color: var(--muted)"></span>
+            </div>
+
+            <div class="audio-grid">
+                <!-- Thresholds dynamiques -->
+                <div>
+                    <div
+                        style="
+                            display: flex;
+                            align-items: center;
+                            margin-bottom: 0.4rem;
+                        ">
+                        <span class="sec" style="margin-bottom: 0"
+                            >Seuils audio (dB)</span
+                        >
+                        <button
+                            onclick="addThreshold()"
+                            style="
+                                margin-left: auto;
+                                background: var(--accent);
+                                border: none;
+                                color: #fff;
+                                font-size: 0.7rem;
+                                font-weight: 700;
+                                padding: 0.2rem 0.6rem;
+                                border-radius: 4px;
+                                cursor: pointer;
+                                font-family: var(--font);
+                            ">
+                            + Seuil
+                        </button>
+                    </div>
+                    <div class="card">
+                        <div
+                            class="card-body"
+                            style="
+                                display: flex;
+                                flex-direction: column;
+                                gap: 0;
+                            "
+                            id="thresh-list"></div>
+                    </div>
+
+                    <!-- Hold duration -->
+                    <div class="sec" style="margin-top: 1.25rem">
+                        Durée hold émotion
+                    </div>
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="hold-row">
+                                <span
+                                    style="
+                                        font-size: 0.78rem;
+                                        color: var(--muted);
+                                    "
+                                    >Durée minimale d'affichage d'une émotion
+                                    après le silence</span
+                                >
+                                <input
+                                    class="hold-slider"
+                                    type="range"
+                                    id="hold-ms"
+                                    min="200"
+                                    max="5000"
+                                    step="100"
+                                    value="800" />
+                                <div class="hold-val" id="hold-val">800ms</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Frame speed -->
+                    <div class="sec" style="margin-top: 1.25rem">
+                        Vitesse animation (ms/frame)
+                    </div>
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="speed-row">
+                                <span
+                                    style="
+                                        font-size: 0.78rem;
+                                        color: var(--muted);
+                                    "
+                                    >Intervalle entre chaque frame du
+                                    flipbook</span
+                                >
+                                <input
+                                    class="speed-slider"
+                                    type="range"
+                                    id="frame-speed"
+                                    min="50"
+                                    max="1000"
+                                    step="25"
+                                    value="150" />
+                                <div class="speed-val" id="speed-val">
+                                    300ms
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Live DB meter -->
+                    <div class="sec" style="margin-top: 1.25rem">
+                        Niveaux audio en direct
+                    </div>
+                    <div class="card">
+                        <div class="card-body db-meter-wrap" id="db-meter">
+                            <span
+                                style="font-size: 0.75rem; color: var(--muted)"
+                                >En attente du bot...</span
+                            >
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Emotions -->
+                <div>
+                    <div class="sec">Émotions personnalisées</div>
+                    <div class="card">
+                        <div
+                            class="card-body"
+                            style="
+                                display: flex;
+                                flex-direction: column;
+                                gap: 0.75rem;
+                            ">
+                            <div
+                                style="
+                                    font-size: 0.72rem;
+                                    color: var(--muted);
+                                    line-height: 1.6;
+                                ">
+                                Chaque émotion se déclenche quand le niveau
+                                audio atteint son seuil minimum et qu'une bande
+                                de fréquence domine les autres selon la
+                                sensibilité configurée.
+                            </div>
+                            <div class="emotion-list" id="emotion-list"></div>
+                            <button
+                                class="add-emotion-btn"
+                                onclick="addEmotion()">
+                                + Ajouter une émotion
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- /audio-grid -->
+
+            <button class="save-btn" onclick="saveAudioConfig()">
+                ✓ Appliquer la config
+            </button>
+        </div>
+        <!-- /panel-audio -->
+
+        <!-- ══ PANEL: BOT SETUP ═══════════════════════════════════════ -->
+        <div class="panel" id="panel-setup">
+            <!-- Statut actuel du bot -->
+            <div id="setup-status-card" class="card" style="max-width: 560px">
+                <div class="card-head">🤖 Statut du bot Discord</div>
+                <div
+                    class="card-body"
+                    id="setup-status-body"
+                    style="display: flex; flex-direction: column; gap: 0.75rem">
+                    <div
+                        style="display: flex; align-items: center; gap: 0.6rem">
+                        <span class="api-dot" id="bot-config-dot"></span>
+                        <span
+                            id="bot-config-label"
+                            style="font-size: 0.85rem; color: var(--muted)"
+                            >Chargement...</span
+                        >
+                    </div>
+                    <button
+                        class="obs-btn ghost"
+                        id="change-token-btn"
+                        onclick="showTokenForm()"
+                        style="
+                            display: none;
+                            align-self: flex-start;
+                            font-size: 0.75rem;
+                        ">
+                        Changer le token
+                    </button>
+                </div>
+            </div>
+
+            <!-- Formulaire token -->
+            <div
+                id="token-form"
+                class="card"
+                style="max-width: 560px; display: none">
+                <div class="card-head">🔑 Token du bot Discord</div>
+                <div
+                    class="card-body"
+                    style="display: flex; flex-direction: column; gap: 1rem">
+                    <p
+                        style="
+                            font-size: 0.78rem;
+                            color: var(--muted);
+                            line-height: 1.65;
+                        ">
+                        Le token identifie ton bot Discord. Ne le partage
+                        jamais.<br />
+                        Il sera sauvegardé dans le fichier
+                        <code
+                            style="
+                                font-family: var(--mono);
+                                background: var(--bg3);
+                                padding: 0.1rem 0.35rem;
+                                border-radius: 3px;
+                                color: var(--accent2);
+                            "
+                            >.env</code
+                        >
+                        du bot.
+                    </p>
+                    <div
+                        style="display: flex; gap: 0.5rem; align-items: center">
+                        <input
+                            type="password"
+                            id="token-input"
+                            placeholder="MTI3..."
+                            autocomplete="off"
+                            style="
+                                flex: 1;
+                                background: var(--bg3);
+                                border: 1px solid var(--border);
+                                color: var(--text);
+                                font-family: var(--mono);
+                                font-size: 0.8rem;
+                                padding: 0.5rem 0.75rem;
+                                border-radius: 6px;
+                                outline: none;
+                            " />
+                        <button
+                            class="obs-btn ghost"
+                            onclick="toggleTokenVisibility()"
+                            id="toggle-vis-btn"
+                            style="font-size: 0.75rem; white-space: nowrap">
+                            👁 Voir
+                        </button>
+                    </div>
+                    <div
+                        id="token-feedback"
+                        style="
+                            font-size: 0.75rem;
+                            display: none;
+                            padding: 0.5rem 0.75rem;
+                            border-radius: 6px;
+                        "></div>
+                    <div style="display: flex; gap: 0.5rem">
+                        <button
+                            class="save-btn"
+                            onclick="saveToken()"
+                            id="save-token-btn">
+                            Vérifier et sauvegarder
+                        </button>
+                        <button
+                            class="obs-btn ghost"
+                            id="cancel-token-btn"
+                            onclick="cancelTokenForm()"
+                            style="font-size: 0.78rem; display: none">
+                            Annuler
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Permissions requises -->
+            <div class="card" style="max-width: 560px">
+                <div class="card-head">📋 Permissions Discord requises</div>
+                <div
+                    class="card-body"
+                    style="display: flex; flex-direction: column; gap: 0.6rem">
+                    <p
+                        style="
+                            font-size: 0.75rem;
+                            color: var(--muted);
+                            margin-bottom: 0.25rem;
+                        ">
+                        Dans le
+                        <a
+                            href="https://discord.com/developers/applications"
+                            target="_blank"
+                            style="color: var(--accent2)"
+                            >portail développeur Discord</a
+                        >, ton bot doit avoir :
+                    </p>
+
+                    <div
+                        style="
+                            display: flex;
+                            flex-direction: column;
+                            gap: 0.4rem;
+                        ">
+                        <div class="perm-row">
+                            <span class="perm-badge">Bot</span
+                            ><strong>View Channels</strong> — voir les canaux du
+                            serveur
+                        </div>
+                        <div class="perm-row">
+                            <span class="perm-badge">Bot</span
+                            ><strong>Read Message History</strong> — lire les
+                            commandes !join
+                        </div>
+                        <div class="perm-row">
+                            <span class="perm-badge">Bot</span
+                            ><strong>Send Messages</strong> — répondre aux
+                            commandes
+                        </div>
+                        <div class="perm-row">
+                            <span class="perm-badge">Bot</span
+                            ><strong>Connect</strong> — rejoindre un canal vocal
+                        </div>
+                        <div class="perm-row">
+                            <span class="perm-badge">Bot</span
+                            ><strong>Speak</strong> — nécessaire pour recevoir
+                            l'audio
+                        </div>
+                        <div class="perm-row">
+                            <span class="perm-badge">Bot</span
+                            ><strong>Use Voice Activity</strong> — détecter qui
+                            parle
+                        </div>
+                        <div class="perm-row">
+                            <span class="perm-badge intent"
+                                >Privileged Intent</span
+                            ><strong>Message Content Intent</strong> — lire le
+                            contenu des messages (!join)
+                        </div>
+                        <div class="perm-row">
+                            <span class="perm-badge intent"
+                                >Privileged Intent</span
+                            ><strong>Server Members Intent</strong> — récupérer
+                            les displayNames
+                        </div>
+                    </div>
+
+                    <div
+                        style="
+                            margin-top: 0.5rem;
+                            padding: 0.6rem 0.75rem;
+                            background: var(--bg3);
+                            border-radius: 6px;
+                            border-left: 3px solid var(--warn);
+                        ">
+                        <p
+                            style="
+                                font-size: 0.72rem;
+                                color: var(--warn);
+                                font-weight: 600;
+                            ">
+                            ⚠ Privileged Intents
+                        </p>
+                        <p
+                            style="
+                                font-size: 0.72rem;
+                                color: var(--muted);
+                                margin-top: 0.2rem;
+                                line-height: 1.6;
+                            ">
+                            Les deux intents marqués doivent être activés
+                            manuellement dans
+                            <strong>Bot → Privileged Gateway Intents</strong> du
+                            portail développeur.
+                        </p>
+                    </div>
+
+                    <div
+                        style="
+                            margin-top: 0.25rem;
+                            padding: 0.6rem 0.75rem;
+                            background: var(--bg3);
+                            border-radius: 6px;
+                            border-left: 3px solid var(--accent2);
+                        ">
+                        <p
+                            style="
+                                font-size: 0.72rem;
+                                color: var(--accent2);
+                                font-weight: 600;
+                            ">
+                            💡 URL d'invitation recommandée
+                        </p>
+                        <div
+                            id="invite-url"
+                            style="
+                                font-family: var(--mono);
+                                font-size: 0.65rem;
+                                color: var(--muted);
+                                margin-top: 0.35rem;
+                                word-break: break-all;
+                            ">
+                            Disponible après avoir configuré le token
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- /panel-setup -->
+
+        <!-- ══ MODAL URL OBS ═════════════════════════════════════════════ -->
+        <div
+            class="overlay"
+            id="modal"
+            onclick="if (event.target === this) closeModal();">
+            <div class="modal">
+                <h2>Browser Source OBS</h2>
+                <p>
+                    Colle cette URL dans une
+                    <strong>Browser Source</strong> OBS.<br />Chaque streamer a
+                    ses propres images — rien n'est partagé.
+                </p>
+                <div class="modal-url" id="modal-url">—</div>
+                <div class="modal-row">
+                    <button class="obs-btn" onclick="copyUrl()">Copier</button>
+                    <button class="obs-btn ghost" onclick="closeModal()">
+                        Fermer
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="toast"></div>
+
+        <script>
+            // ════════════════════════════════════════════════════════════════
+            // DÉLÉGATION SYNCHRONE — js-open-pos
+            // Déclarée en premier, avant tout code async, pour que le
+            // navigateur considère le clic comme interaction directe.
+            // Le bouton porte data-uid et data-state — pas de closure async.
+            // ════════════════════════════════════════════════════════════════
+            document.addEventListener("click", function (e) {
+                const btn = e.target.closest(".js-open-pos");
+                if (!btn) return;
+                const uid = btn.dataset.uid;
+                const stateKey = btn.dataset.state;
+                if (!uid || !stateKey) return;
+                const host =
+                    document.getElementById("api-host")?.value.trim() ||
+                    "localhost:3000";
+                const saved = localStorage.getItem("pngtuber-canvasSize");
+                const size = saved ? JSON.parse(saved) : { w: 800, h: 800 };
+                const url =
+                    "http://" +
+                    host +
+                    "/positioner.html?t=" +
+                    encodeURIComponent(uid) +
+                    "&state=" +
+                    encodeURIComponent(stateKey) +
+                    "&w=" +
+                    size.w +
+                    "&h=" +
+                    size.h;
+                window.open(url, "_blank");
+            });
+
+            // ════════════════════════════════════════════════════════════════
+            // INDEXEDDB
+            // ════════════════════════════════════════════════════════════════
+            // STATE & CONFIG
+            // ════════════════════════════════════════════════════════════════
+
+            let audioConfig = {
+                thresholds: [
+                    { key: "low", label: "Low", db: -55, color: "#4a90e2" },
+                    {
+                        key: "medium",
+                        label: "Medium",
+                        db: -35,
+                        color: "#f0a500",
+                    },
+                    { key: "high", label: "High", db: -15, color: "#e74c6c" },
+                ],
+                emotionHoldMs: 800,
+                frameSpeed: 150,
+                emotions: [
+                    {
+                        key: "anger",
+                        label: "Anger",
+                        minStatus: "medium",
+                        freqMin: 80,
+                        freqMax: 300,
+                        sensitivity: 1.2,
+                    },
+                    {
+                        key: "scream",
+                        label: "Scream",
+                        minStatus: "high",
+                        freqMin: 800,
+                        freqMax: 4000,
+                        sensitivity: 1.5,
+                    },
+                ],
+            };
+
+            // Source de vérité côté UI:
+            // - audioConfig: réglages audio/émotions en cours d'édition
+            // - configData : assets + displayName par utilisateur/token
+
+            // userId → { displayName, states: { stateKey → [{file, url},...] } }
+            const configData = {};
+
+            // AUDIO_STATES dérivé des seuils : silent + chaque seuil trié par db
+            function getAudioStates() {
+                return [
+                    "silent",
+                    ...[...audioConfig.thresholds]
+                        .sort((a, b) => a.db - b.db)
+                        .map((t) => t.key),
+                ];
+            }
+            function getFallbackChain() {
+                const s = [...audioConfig.thresholds]
+                    .sort((a, b) => a.db - b.db)
+                    .map((t) => t.key);
+                const c = { silent: null };
+                s.forEach((k, i) => {
+                    c[k] = i === 0 ? "silent" : s[i - 1];
+                });
+                return c;
+            }
+
+            function allStates() {
+                // États exposés dans la grille upload:
+                // - audio states (open + closed)
+                // - emotions (active + *_silent)
+                const audio = getAudioStates().flatMap((s) => [
+                    s,
+                    s + "_closed",
+                ]);
+                const emotions = audioConfig.emotions.flatMap((e) => [
+                    e.key,
+                    e.key + "_silent",
+                ]);
+                return [...audio, ...emotions];
+            }
+
+            function isClosedState(key) {
+                return key.endsWith("_closed");
+            }
+            function isEmotionSilent(key) {
+                return (
+                    key.endsWith("_silent") &&
+                    !getAudioStates().includes(key.replace(/_silent$/, ""))
+                );
+            }
+            function baseState(key) {
+                return key.replace(/_closed$|_silent$/, "");
+            }
+            function isAudioState(key) {
+                return getAudioStates().includes(key);
+            }
+            function isEmotion(key) {
+                return (
+                    !isAudioState(key) &&
+                    !isClosedState(key) &&
+                    !isEmotionSilent(key)
+                );
+            }
+
+            function stateColor(key) {
+                const base = baseState(key);
+                const t = audioConfig.thresholds.find((t) => t.key === base);
+                if (t) return t.color;
+                if (base === "silent") return "var(--c-silent)";
+                const em = audioConfig.emotions.find((e) => e.key === base);
+                if (em?.color) return em.color;
+                return "var(--accent)";
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // TABS
+            // ════════════════════════════════════════════════════════════════
+            function switchTab(name, btn) {
+                document
+                    .querySelectorAll(".tab-btn")
+                    .forEach((b) => b.classList.remove("active"));
+                document
+                    .querySelectorAll(".panel")
+                    .forEach((p) => p.classList.remove("active"));
+                btn.classList.add("active");
+                document
+                    .getElementById(`panel-${name}`)
+                    .classList.add("active");
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // API HTTP — toutes les opérations passent par le bot local
+            // ════════════════════════════════════════════════════════════════
+            function apiBase() {
+                return `http://${document.getElementById("api-host").value.trim() || "localhost:3000"}`;
+            }
+
+            // Récupérer les niveaux audio
+            async function pollApi() {
+                try {
+                    const res = await fetch(`${apiBase()}/levels`, {
+                        cache: "no-store",
+                    });
+                    if (!res.ok) throw 0;
+                    const data = await res.json();
+                    document.getElementById("api-dot").className = "api-dot ok";
+                    const ids = Object.keys(data).filter((k) => k !== "_bot");
+                    document.getElementById("empty-state").style.display =
+                        ids.length ? "none" : "block";
+                    // Boucle principale d'hydratation UI depuis /levels.
+                    for (const uid of ids) {
+                        const info = data[uid];
+                        if (!configData[uid]) {
+                            // Première apparition d'un user: initialise ses frames + ses panneaux UI.
+                            configData[uid] = {
+                                displayName: info.displayName || uid,
+                                states: {},
+                            };
+                            configData[uid].states =
+                                await loadFramesFromServer(uid);
+                            renderUser(uid);
+                            saveKnownUser(uid, info.displayName || uid);
+                            populateUserSelect(currentAudioUserId); // nouveau user → rafraîchir le select
+                        }
+                        const pill = document.getElementById(`pill-${uid}`);
+                        if (pill)
+                            pill.className =
+                                "speaking-pill" + (info.speaking ? " on" : "");
+                        updateDbMeter(uid, info);
+                    }
+                } catch {
+                    document.getElementById("api-dot").className =
+                        "api-dot err";
+                }
+            }
+
+            // Charger les frames depuis le bot (GET /frames/:userId)
+            async function loadFramesFromServer(uid) {
+                const states = {};
+                for (const s of allStates()) states[s] = []; // init tous les états dont _closed
+                try {
+                    const res = await fetch(`${apiBase()}/frames/${uid}`, {
+                        cache: "no-store",
+                    });
+                    if (!res.ok) return states;
+                    const data = await res.json();
+                    // data = { stateKey: [{file, url}, ...], ... }
+                    for (const [stateKey, frames] of Object.entries(data)) {
+                        // Convertir les URLs relatives en absolues
+                        states[stateKey] = frames.map((f) => ({
+                            file: f.file,
+                            name: f.file,
+                            url: `${apiBase()}${f.url}`,
+                        }));
+                    }
+                } catch {}
+                return states;
+            }
+
+            // Upload une image vers le bot (POST /upload multipart)
+            async function uploadFrame(uid, stateKey, file) {
+                const fd = new FormData();
+                fd.append("token", uid);
+                fd.append("stateKey", stateKey);
+                fd.append("image", file, file.name);
+                const res = await fetch(`${apiBase()}/upload`, {
+                    method: "POST",
+                    body: fd,
+                });
+                const data = await res.json();
+                if (!data.ok) throw new Error(data.error || "Upload failed");
+                return {
+                    file: data.file,
+                    name: data.file,
+                    url: `${apiBase()}${data.url}`,
+                };
+            }
+
+            // Supprimer une frame (POST /delete-frame)
+            async function deleteFrameFromServer(uid, stateKey, file) {
+                await fetch(`${apiBase()}/delete-frame`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ token: uid, stateKey, file }),
+                });
+            }
+
+            // Sauvegarder l'ordre (POST /reorder)
+            async function saveOrderToServer(uid, stateKey, frames) {
+                await fetch(`${apiBase()}/reorder`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        token: uid,
+                        stateKey,
+                        order: frames.map((f) => f.file),
+                    }),
+                });
+            }
+
+            // Sauvegarder audioConfig dans localStorage (local au streamer)
+            // ════════════════════════════════════════════════════════════════
+            // CONFIG AUDIO PAR USER
+            // ════════════════════════════════════════════════════════════════
+            let currentAudioUserId = null; // user actuellement édité dans le panel audio
+
+            const DEFAULT_AUDIO_CONFIG = () => ({
+                thresholds: [
+                    { key: "low", label: "Low", db: -55, color: "#4a90e2" },
+                    {
+                        key: "medium",
+                        label: "Medium",
+                        db: -35,
+                        color: "#f0a500",
+                    },
+                    { key: "high", label: "High", db: -15, color: "#e74c6c" },
+                ],
+                emotionHoldMs: 800,
+                frameSpeed: 150,
+                emotions: [
+                    {
+                        key: "anger",
+                        label: "Anger",
+                        minStatus: "medium",
+                        freqMin: 80,
+                        freqMax: 300,
+                        sensitivity: 1.2,
+                    },
+                    {
+                        key: "scream",
+                        label: "Scream",
+                        minStatus: "high",
+                        freqMin: 800,
+                        freqMax: 4000,
+                        sensitivity: 1.5,
+                    },
+                ],
+            });
+
+            // Indicateur de sauvegarde
+            function setAudioSaveIndicator(state) {
+                const el = document.getElementById("audio-save-indicator");
+                if (!el) return;
+                if (state === "saved") {
+                    el.textContent = "✓ sauvegardé";
+                    el.style.color = "var(--accent2)";
+                }
+                if (state === "unsaved") {
+                    el.textContent = "● non sauvegardé";
+                    el.style.color = "var(--warn)";
+                }
+                if (state === "none") {
+                    el.textContent = "";
+                }
+            }
+
+            // Remplir le select avec les users connus (bot + localStorage)
+            async function populateUserSelect(selectVal) {
+                const sel = document.getElementById("audio-user-select");
+                const prev = selectVal || sel.value;
+                // Vider sauf option vide
+                sel.innerHTML =
+                    '<option value="">— Sélectionner un utilisateur —</option>';
+
+                // Map évite les doublons en fusionnant 3 sources (local, backend, live).
+                const users = new Map(); // uid → displayName
+
+                // 1. Users connus localement
+                try {
+                    const known = loadKnownUsers();
+                    for (const [uid, info] of Object.entries(known))
+                        users.set(uid, info.displayName || uid);
+                } catch {}
+
+                // 2. Users connus côté bot
+                try {
+                    const res = await fetch(`${apiBase()}/known-users`, {
+                        cache: "no-store",
+                    });
+                    if (res.ok) {
+                        const list = await res.json();
+                        for (const u of list)
+                            users.set(u.token, u.displayName || "???");
+                    }
+                } catch {}
+
+                // 3. Users actifs en ce moment
+                for (const uid of Object.keys(configData)) {
+                    users.set(uid, configData[uid].displayName || uid);
+                }
+
+                for (const [uid, name] of users) {
+                    const opt = document.createElement("option");
+                    opt.value = uid;
+                    opt.textContent = name;
+                    sel.appendChild(opt);
+                }
+
+                if (prev && [...users.keys()].includes(prev)) sel.value = prev;
+            }
+
+            // Charger la config audio d'un user depuis le bot
+            async function loadUserAudioConfig(userId) {
+                if (!userId) {
+                    audioConfig = DEFAULT_AUDIO_CONFIG();
+                    applyAudioConfigToUI();
+                    setAudioSaveIndicator("none");
+                    return;
+                }
+                try {
+                    const res = await fetch(
+                        `${apiBase()}/user-config/${userId}`,
+                        { cache: "no-store" },
+                    );
+                    const data = res.ok ? await res.json() : {};
+                    audioConfig = mergeWithDefaults(data);
+                    applyAudioConfigToUI();
+                    setAudioSaveIndicator(
+                        res.ok && Object.keys(data).length ? "saved" : "none",
+                    );
+                } catch {
+                    // Fallback localStorage
+                    try {
+                        const local = JSON.parse(
+                            localStorage.getItem(
+                                `pngtuber-cfg-${slugForUid(userId)}`,
+                            ) || "null",
+                        );
+                        audioConfig = mergeWithDefaults(local || {});
+                    } catch {
+                        audioConfig = DEFAULT_AUDIO_CONFIG();
+                    }
+                    applyAudioConfigToUI();
+                    setAudioSaveIndicator("none");
+                }
+            }
+
+            function mergeWithDefaults(data) {
+                const def = DEFAULT_AUDIO_CONFIG();
+                const cfg = { ...def, ...data };
+                // Migration format objet → tableau (compat anciennes versions).
+                if (cfg.thresholds && !Array.isArray(cfg.thresholds)) {
+                    const o = cfg.thresholds;
+                    cfg.thresholds = [
+                        {
+                            key: "low",
+                            label: "Low",
+                            db: o.low ?? -55,
+                            color: "#4a90e2",
+                        },
+                        {
+                            key: "medium",
+                            label: "Medium",
+                            db: o.medium ?? -35,
+                            color: "#f0a500",
+                        },
+                        {
+                            key: "high",
+                            label: "High",
+                            db: o.high ?? -15,
+                            color: "#e74c6c",
+                        },
+                    ];
+                }
+                // Migration dominantBand → freqMin/freqMax (format actuel plus flexible).
+                cfg.emotions.forEach((em) => {
+                    if (em.dominantBand && !em.freqMin) {
+                        const map = {
+                            low: { min: 80, max: 300 },
+                            mid: { min: 300, max: 2000 },
+                            high: { min: 2000, max: 8000 },
+                        };
+                        const r = map[em.dominantBand] || {
+                            min: 80,
+                            max: 4000,
+                        };
+                        em.freqMin = r.min;
+                        em.freqMax = r.max;
+                        delete em.dominantBand;
+                    }
+                });
+                return cfg;
+            }
+
+            // Appliquer audioConfig aux sliders/UI
+            function applyAudioConfigToUI() {
+                renderThresholds();
+                renderEmotions();
+                const holdSl = document.getElementById("hold-ms");
+                const speedSl = document.getElementById("frame-speed");
+                if (holdSl) {
+                    holdSl.value = audioConfig.emotionHoldMs;
+                    document.getElementById("hold-val").textContent =
+                        audioConfig.emotionHoldMs + "ms";
+                }
+                if (speedSl) {
+                    speedSl.value = audioConfig.frameSpeed || 150;
+                    document.getElementById("speed-val").textContent =
+                        (audioConfig.frameSpeed || 150) + "ms";
+                }
+            }
+
+            async function onAudioUserChange(uid) {
+                if (currentAudioUserId && uid !== currentAudioUserId) {
+                    // Auto-save avant de changer
+                    if (currentAudioUserId)
+                        await saveUserAudioConfig(currentAudioUserId, false);
+                }
+                currentAudioUserId = uid || null;
+                if (currentAudioUserId)
+                    localStorage.setItem(
+                        "pngtuber-lastUser",
+                        slugForUid(currentAudioUserId),
+                    );
+                else localStorage.removeItem("pngtuber-lastUser");
+                await loadUserAudioConfig(currentAudioUserId);
+            }
+
+            // Sauvegarder la config audio d'un user
+            async function saveUserAudioConfig(userId, showToast = true) {
+                if (!userId) return;
+                const cfg = {
+                    ...audioConfig,
+                    displayName: configData[userId]?.displayName || userId,
+                };
+                // Sauvegarder côté bot
+                try {
+                    await fetch(`${apiBase()}/user-config/${userId}`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(cfg),
+                    });
+                    setAudioSaveIndicator("saved");
+                } catch {
+                    // Fallback localStorage
+                    localStorage.setItem(
+                        `pngtuber-cfg-${slugForUid(userId)}`,
+                        JSON.stringify(cfg),
+                    );
+                    setAudioSaveIndicator("saved");
+                }
+                // BroadcastChannel pour le viewer
+                try {
+                    new BroadcastChannel("pngtuber-config").postMessage({
+                        type: "audioConfig",
+                        userId,
+                        data: cfg,
+                    });
+                } catch {}
+                if (showToast)
+                    toast(
+                        "✓ Config sauvegardée pour " +
+                            (cfg.displayName || userId),
+                    );
+            }
+
+            // Compatibilité : saveAudioConfigLocal utilisé dans addThreshold, removeThreshold, etc.
+            function saveAudioConfigLocal() {
+                setAudioSaveIndicator("unsaved");
+                // Auto-save si user sélectionné
+                if (currentAudioUserId)
+                    saveUserAudioConfig(currentAudioUserId, false);
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // DB METER
+            // ════════════════════════════════════════════════════════════════
+            const meterRows = {};
+            function updateDbMeter(uid, info) {
+                const meter = document.getElementById("db-meter");
+                if (!meterRows[uid]) {
+                    const row = document.createElement("div");
+                    row.className = "db-user-row";
+                    row.innerHTML = `
+      <span class="db-name">${esc(info.displayName || uid)}</span>
+      <div class="db-bar-track"><div class="db-bar-fill" id="mbar-${uid}"></div></div>
+      <span class="db-val" id="mval-${uid}">— dB</span>
+      <span class="db-status" id="mstat-${uid}">—</span>
+    `;
+                    if (meter.querySelector("span")) meter.innerHTML = "";
+                    meterRows[uid] = true;
+                    meter.appendChild(row);
+                }
+                // Mapping [-100..0] dB -> [0..100]% pour la barre.
+                const db = info.db ?? -100;
+                const pct = Math.max(
+                    0,
+                    Math.min(100, ((db + 100) / 100) * 100),
+                );
+                const bar = document.getElementById(`mbar-${uid}`);
+                const val = document.getElementById(`mval-${uid}`);
+                const stat = document.getElementById(`mstat-${uid}`);
+                if (!bar) return;
+                bar.style.width = pct + "%";
+                val.textContent = db.toFixed(1) + " dB";
+                const sorted = [...audioConfig.thresholds].sort(
+                    (a, b) => a.db - b.db,
+                );
+                let status = "silent";
+                for (const t of sorted) {
+                    if (db >= t.db) status = t.key;
+                }
+                stat.textContent = status;
+                stat.style.color = stateColor(status);
+                bar.style.background = stateColor(status);
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // SEUILS AUDIO DYNAMIQUES
+            // ════════════════════════════════════════════════════════════════
+            const THRESH_PALETTE = [
+                "#4a90e2",
+                "#f0a500",
+                "#e74c6c",
+                "#9b59b6",
+                "#2ecc71",
+                "#1abc9c",
+                "#e67e22",
+                "#00d9b8",
+            ];
+
+            function renderThresholds() {
+                const list = document.getElementById("thresh-list");
+                if (!list) return;
+                list.innerHTML = "";
+                // Tri obligatoire: la classification audio dépend de l'ordre des seuils.
+                audioConfig.thresholds.sort((a, b) => a.db - b.db);
+                audioConfig.thresholds.forEach((t, idx) => {
+                    const row = document.createElement("div");
+                    row.className = "thresh-row";
+
+                    const dot = document.createElement("div");
+                    dot.className = "thresh-dot";
+                    dot.style.cssText =
+                        "background:" + t.color + ";cursor:pointer;";
+                    dot.title = "Couleur suivante";
+                    dot.onclick = () => cycleThreshColor(idx);
+
+                    const labelInp = document.createElement("input");
+                    labelInp.value = t.label;
+                    labelInp.maxLength = 14;
+                    labelInp.style.cssText =
+                        "width:74px;background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:0.72rem;padding:0.15rem 0.4rem;border-radius:4px;font-family:var(--font);";
+                    labelInp.oninput = () => {
+                        audioConfig.thresholds[idx].label = labelInp.value;
+                        audioConfig.thresholds[idx].key =
+                            slugKey(labelInp.value) ||
+                            audioConfig.thresholds[idx].key;
+                        updateAudioStates();
+                    };
+
+                    const slider = document.createElement("input");
+                    slider.type = "range";
+                    slider.className = "thresh-slider";
+                    slider.min = -80;
+                    slider.max = -5;
+                    slider.step = 1;
+                    slider.value = t.db;
+                    const valDiv = document.createElement("div");
+                    valDiv.className = "thresh-val";
+                    valDiv.textContent = t.db + " dB";
+                    slider.oninput = () => {
+                        audioConfig.thresholds[idx].db = +slider.value;
+                        valDiv.textContent = slider.value + " dB";
+                        updateAudioStates();
+                    };
+
+                    const delBtn = document.createElement("button");
+                    delBtn.title = "Supprimer";
+                    delBtn.textContent = "✕";
+                    delBtn.style.cssText =
+                        "background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.75rem;padding:2px 5px;border-radius:3px;";
+                    if (audioConfig.thresholds.length <= 1) {
+                        delBtn.disabled = true;
+                        delBtn.style.opacity = "0.3";
+                        delBtn.style.cursor = "default";
+                    }
+                    delBtn.onclick = () => removeThreshold(idx);
+
+                    row.appendChild(dot);
+                    row.appendChild(labelInp);
+                    row.appendChild(slider);
+                    row.appendChild(valDiv);
+                    row.appendChild(delBtn);
+                    list.appendChild(row);
+                });
+            }
+
+            function cycleThreshColor(idx) {
+                const cur = THRESH_PALETTE.indexOf(
+                    audioConfig.thresholds[idx].color,
+                );
+                audioConfig.thresholds[idx].color =
+                    THRESH_PALETTE[(cur + 1) % THRESH_PALETTE.length];
+                renderThresholds();
+            }
+
+            function slugKey(str) {
+                return (
+                    str
+                        .toLowerCase()
+                        .trim()
+                        .replace(/[^a-z0-9]+/g, "_")
+                        .replace(/^_|_$/g, "") || null
+                );
+            }
+
+            function addThreshold() {
+                const dbs = audioConfig.thresholds.map((t) => t.db);
+                let db = -25;
+                while (dbs.includes(db) && db > -75) db -= 5;
+                const idx =
+                    audioConfig.thresholds.length % THRESH_PALETTE.length;
+                const label = `Level ${audioConfig.thresholds.length + 1}`;
+                audioConfig.thresholds.push({
+                    key: slugKey(label) || `level_${Date.now()}`,
+                    label,
+                    db,
+                    color: THRESH_PALETTE[idx],
+                });
+                renderThresholds();
+                updateAudioStates();
+                saveAudioConfigLocal();
+            }
+
+            function removeThreshold(idx) {
+                if (audioConfig.thresholds.length <= 1) return;
+                if (
+                    !confirm(
+                        `Supprimer le seuil "${audioConfig.thresholds[idx].label}" ?`,
+                    )
+                )
+                    return;
+                const key = audioConfig.thresholds[idx].key;
+                audioConfig.thresholds.splice(idx, 1);
+                renderThresholds();
+                updateAudioStates();
+                saveAudioConfigLocal();
+                // Retirer les colonnes de tous les users
+                document
+                    .querySelectorAll(
+                        `.state-col[data-state="${key}"], .state-col[data-state="${key}_closed"]`,
+                    )
+                    .forEach((el) => el.closest(".state-group")?.remove());
+            }
+
+            function updateAudioStates() {
+                // Reconstruire les grilles de tous les users avec les nouveaux états
+                for (const uid of Object.keys(configData)) rebuildUserGrid(uid);
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // ÉMOTIONS — avec plage de fréquence par slider double + config par user
+            // ════════════════════════════════════════════════════════════════
+
+            // userEmotionConfig[uid][emKey] = { freqMin, freqMax, sensitivity, minStatus }
+            // Stocké dans localStorage clé 'pngtuber-userEmotions'
+            const userEmotionConfig = {};
+
+            function loadUserEmotionConfigs() {
+                try {
+                    const raw = JSON.parse(
+                        localStorage.getItem("pngtuber-emotions") || "{}",
+                    );
+                    // raw keys are slugs — keep as-is, resolution via slugForUid when reading
+                    Object.assign(userEmotionConfig, raw);
+                } catch {}
+            }
+
+            function saveUserEmotionConfigs() {
+                // Store by slug, not uid
+                const bySlug = {};
+                for (const [uid, cfg] of Object.entries(userEmotionConfig)) {
+                    const slug = slugForUid(uid);
+                    bySlug[slug] = cfg;
+                }
+                localStorage.setItem(
+                    "pngtuber-emotions",
+                    JSON.stringify(bySlug),
+                );
+            }
+
+            function getUserEmotion(uid, emKey) {
+                // Override user > config globale
+                return userEmotionConfig[uid]?.[emKey] || null;
+            }
+
+            function setUserEmotion(uid, emKey, field, value) {
+                if (!userEmotionConfig[uid]) userEmotionConfig[uid] = {};
+                if (!userEmotionConfig[uid][emKey]) {
+                    const base = audioConfig.emotions.find(
+                        (e) => e.key === emKey,
+                    );
+                    userEmotionConfig[uid][emKey] = base ? { ...base } : {};
+                }
+                userEmotionConfig[uid][emKey][field] = value;
+                saveUserEmotionConfigs();
+            }
+
+            function renderEmotions() {
+                const list = document.getElementById("emotion-list");
+                list.innerHTML = "";
+                audioConfig.emotions.forEach((em, idx) => {
+                    const card = document.createElement("div");
+                    card.className = "emotion-card";
+                    const stateOptions = getAudioStates()
+                        .filter((s) => s !== "silent")
+                        .map(
+                            (s) =>
+                                `<option value="${s}"${em.minStatus === s ? " selected" : ""}>${s}</option>`,
+                        )
+                        .join("");
+                    card.innerHTML = `
+      <div class="emotion-card-head">
+        <span class="emotion-key" style="color:${stateColor(em.key)}">${esc(em.label)}
+          <span style="opacity:0.5;font-size:0.7em;">(${esc(em.key)})</span></span>
+        <button class="emotion-del" title="Supprimer" onclick="removeEmotion(${idx})">✕</button>
+      </div>
+      <div class="emotion-fields">
+        <div class="field"><label>Niveau minimum</label>
+          <select onchange="audioConfig.emotions[${idx}].minStatus=this.value">${stateOptions}</select>
+        </div>
+        <div class="field"><label>Sensibilité</label>
+          <input type="range" min="1" max="4" step="0.1" value="${em.sensitivity}"
+            style="width:80px;accent-color:var(--accent);"
+            oninput="audioConfig.emotions[${idx}].sensitivity=+this.value; this.nextElementSibling.textContent='×'+parseFloat(this.value).toFixed(1)">
+          <span style="font-family:var(--mono);font-size:0.7rem;color:var(--accent2);">×${em.sensitivity.toFixed(1)}</span>
+        </div>
+      </div>
+      <div class="field" style="margin-top:0.4rem;">
+        <label>Plage de fréquence (Hz) <span style="font-family:var(--mono);color:var(--accent2);" id="freq-range-lbl-${em.key}">${em.freqMin}–${em.freqMax} Hz</span></label>
+        <div id="freq-slider-${em.key}" class="dual-range-wrap" data-min="${em.freqMin}" data-max="${em.freqMax}" data-em="${idx}"></div>
+      </div>
+    `;
+                    list.appendChild(card);
+                    buildDualRange(
+                        document.getElementById(`freq-slider-${em.key}`),
+                        20,
+                        8000,
+                        em.freqMin,
+                        em.freqMax,
+                        (lo, hi) => {
+                            audioConfig.emotions[idx].freqMin = lo;
+                            audioConfig.emotions[idx].freqMax = hi;
+                            document.getElementById(
+                                `freq-range-lbl-${em.key}`,
+                            ).textContent = `${lo}–${hi} Hz`;
+                        },
+                    );
+                });
+            }
+
+            // Slider double (range dual) — deux inputs type=range superposés
+            function buildDualRange(
+                container,
+                absMin,
+                absMax,
+                valMin,
+                valMax,
+                onChange,
+            ) {
+                // Slider double custom:
+                // - poignée gauche = min
+                // - poignée droite = max
+                // - snap de 10Hz pour faciliter les réglages répétables
+                const THUMB_R = 7;
+                container.style.cssText =
+                    "position:relative;height:32px;display:flex;align-items:center;user-select:none;";
+
+                const wrap = document.createElement("div");
+                wrap.style.cssText =
+                    "position:relative;width:100%;height:4px;margin:0 " +
+                    THUMB_R +
+                    "px;";
+
+                const trackBg = document.createElement("div");
+                trackBg.style.cssText =
+                    "position:absolute;inset:0;background:var(--border);border-radius:2px;";
+
+                const fill = document.createElement("div");
+                fill.style.cssText =
+                    "position:absolute;top:0;height:100%;background:var(--accent);border-radius:2px;";
+
+                const makeThumb = () => {
+                    const t = document.createElement("div");
+                    t.style.cssText =
+                        "position:absolute;top:50%;width:" +
+                        THUMB_R * 2 +
+                        "px;height:" +
+                        THUMB_R * 2 +
+                        "px;background:var(--accent2);border:2px solid var(--bg2);border-radius:50%;transform:translate(-50%,-50%);cursor:grab;z-index:2;transition:box-shadow 0.1s;";
+                    t.addEventListener("mouseenter", () => {
+                        if (!t._drag)
+                            t.style.boxShadow =
+                                "0 0 0 4px rgba(0,217,184,0.25)";
+                    });
+                    t.addEventListener("mouseleave", () => {
+                        if (!t._drag) t.style.boxShadow = "";
+                    });
+                    return t;
+                };
+
+                const tLo = makeThumb();
+                const tHi = makeThumb();
+
+                let lo = Math.max(absMin, Math.min(absMax, valMin));
+                let hi = Math.max(absMin, Math.min(absMax, valMax));
+
+                const pct = (v) => (v - absMin) / (absMax - absMin);
+                const snap = (p) =>
+                    Math.round(
+                        (absMin +
+                            Math.max(0, Math.min(1, p)) * (absMax - absMin)) /
+                            10,
+                    ) * 10;
+
+                function render() {
+                    tLo.style.left = pct(lo) * 100 + "%";
+                    tHi.style.left = pct(hi) * 100 + "%";
+                    fill.style.left = pct(lo) * 100 + "%";
+                    fill.style.width = (pct(hi) - pct(lo)) * 100 + "%";
+                }
+
+                function startDrag(thumb, isLo) {
+                    thumb._drag = true;
+                    thumb.style.cursor = "grabbing";
+                    thumb.style.boxShadow = "0 0 0 5px rgba(0,217,184,0.35)";
+                    thumb.style.zIndex = "3";
+                    const onMove = (e) => {
+                        const rect = wrap.getBoundingClientRect();
+                        const cx = e.touches ? e.touches[0].clientX : e.clientX;
+                        const v = snap((cx - rect.left) / rect.width);
+                        if (isLo) lo = Math.min(v, hi);
+                        else hi = Math.max(v, lo);
+                        render();
+                        onChange(lo, hi);
+                    };
+                    const onUp = () => {
+                        thumb._drag = false;
+                        thumb.style.cursor = "grab";
+                        thumb.style.boxShadow = "";
+                        thumb.style.zIndex = "2";
+                        window.removeEventListener("mousemove", onMove);
+                        window.removeEventListener("mouseup", onUp);
+                        window.removeEventListener("touchmove", onMove);
+                        window.removeEventListener("touchend", onUp);
+                    };
+                    window.addEventListener("mousemove", onMove);
+                    window.addEventListener("mouseup", onUp);
+                    window.addEventListener("touchmove", onMove, {
+                        passive: true,
+                    });
+                    window.addEventListener("touchend", onUp);
+                }
+
+                tLo.addEventListener("mousedown", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    startDrag(tLo, true);
+                });
+                tHi.addEventListener("mousedown", (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    startDrag(tHi, false);
+                });
+                tLo.addEventListener(
+                    "touchstart",
+                    (e) => {
+                        e.stopPropagation();
+                        startDrag(tLo, true);
+                    },
+                    { passive: true },
+                );
+                tHi.addEventListener(
+                    "touchstart",
+                    (e) => {
+                        e.stopPropagation();
+                        startDrag(tHi, false);
+                    },
+                    { passive: true },
+                );
+
+                wrap.addEventListener("mousedown", (e) => {
+                    if (e.target === tLo || e.target === tHi) return;
+                    const rect = wrap.getBoundingClientRect();
+                    const v = snap((e.clientX - rect.left) / rect.width);
+                    const useLo = Math.abs(v - lo) <= Math.abs(v - hi);
+                    if (useLo) lo = Math.min(v, hi);
+                    else hi = Math.max(v, lo);
+                    render();
+                    onChange(lo, hi);
+                    startDrag(useLo ? tLo : tHi, useLo);
+                });
+
+                wrap.appendChild(trackBg);
+                wrap.appendChild(fill);
+                wrap.appendChild(tLo);
+                wrap.appendChild(tHi);
+                container.appendChild(wrap);
+                render();
+            }
+
+            function addEmotion() {
+                const key = prompt("Clé (minuscules, sans espace) :");
+                if (!key || !/^[a-z_]+$/.test(key))
+                    return toast("Clé invalide");
+                if (audioConfig.emotions.find((e) => e.key === key))
+                    return toast("Émotion déjà existante");
+                const label =
+                    prompt(
+                        "Nom affiché :",
+                        key.charAt(0).toUpperCase() + key.slice(1),
+                    ) || key;
+                audioConfig.emotions.push({
+                    key,
+                    label,
+                    minStatus: getAudioStates()[1] || "low",
+                    freqMin: 80,
+                    freqMax: 4000,
+                    sensitivity: 1.5,
+                });
+                renderEmotions();
+                for (const uid of Object.keys(configData)) {
+                    if (!configData[uid].states[key])
+                        configData[uid].states[key] = [];
+                    if (!configData[uid].states[key + "_silent"])
+                        configData[uid].states[key + "_silent"] = [];
+                    rebuildUserGrid(uid);
+                }
+                toast(`Émotion "${label}" ajoutée`);
+            }
+
+            function removeEmotion(idx) {
+                if (!confirm("Supprimer cette émotion ?")) return;
+                const key = audioConfig.emotions[idx].key;
+                audioConfig.emotions.splice(idx, 1);
+                renderEmotions();
+                document
+                    .querySelectorAll(
+                        `.state-col[data-state="${key}"], .state-col[data-state="${key}_silent"]`,
+                    )
+                    .forEach((el) => el.closest(".state-group")?.remove());
+                toast("Émotion supprimée");
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // PERSISTANCE USERS OFFLINE (tâche C)
+            // Les users vus en session sont sauvegardés localement en JSON
+            // Ils apparaissent dans l'UI même si le bot est déconnecté
+            // ════════════════════════════════════════════════════════════════
+            const USERS_KEY = "pngtuber-users";
+
+            // ── Slug : pseudo → clé localStorage sans uid visible ────────────
+            // Format : slug unique dérivé du pseudo, collision gérée par suffix
+            function makeSlug(name) {
+                return (
+                    (name || "user")
+                        .toLowerCase()
+                        .normalize("NFD")
+                        .replace(/[̀-ͯ]/g, "")
+                        .replace(/[^a-z0-9]+/g, "_")
+                        .replace(/^_|_$/g, "")
+                        .slice(0, 24) || "user"
+                );
+            }
+
+            // Retourne le slug associé à un uid (crée si absent)
+            function slugForUid(uid) {
+                const known = loadKnownUsers();
+                return known[uid]?.slug || uid.slice(0, 8);
+            }
+
+            // Retourne l'uid associé à un slug (null si inconnu)
+            function uidFromSlug(slug) {
+                const known = loadKnownUsers();
+                for (const [uid, info] of Object.entries(known)) {
+                    if (info.slug === slug) return uid;
+                }
+                return null;
+            }
+
+            function loadKnownUsers() {
+                try {
+                    return JSON.parse(localStorage.getItem(USERS_KEY) || "{}");
+                } catch {
+                    return {};
+                }
+            }
+
+            function saveKnownUser(uid, displayName) {
+                const known = loadKnownUsers();
+                // Générer un slug unique basé sur le pseudo
+                const base = makeSlug(displayName);
+                let slug = known[uid]?.slug;
+                if (!slug) {
+                    // Vérifier unicité du slug
+                    const usedSlugs = Object.values(known)
+                        .map((v) => v.slug)
+                        .filter(Boolean);
+                    slug = base;
+                    let n = 2;
+                    while (usedSlugs.includes(slug)) slug = base + "_" + n++;
+                }
+                const changed =
+                    !known[uid] || known[uid].displayName !== displayName;
+                if (changed) {
+                    known[uid] = { displayName, slug, seenAt: Date.now() };
+                    localStorage.setItem(USERS_KEY, JSON.stringify(known));
+                }
+            }
+
+            function renderKnownUsersOffline() {
+                const known = loadKnownUsers();
+                for (const [uid, info] of Object.entries(known)) {
+                    if (configData[uid]) continue; // déjà rendu par le bot live
+                    configData[uid] = {
+                        displayName: info.displayName || uid,
+                        states: {},
+                    };
+                    renderUser(uid);
+                    loadFramesForUser(uid);
+                }
+            }
+
+            async function loadFramesForUser(uid) {
+                try {
+                    const res = await fetch(`${apiBase()}/frames/${uid}`, {
+                        cache: "no-store",
+                    });
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    for (const [state, frames] of Object.entries(data)) {
+                        if (!configData[uid])
+                            configData[uid] = { displayName: uid, states: {} };
+                        configData[uid].states[state] = frames;
+                        const fl = document.getElementById(
+                            `fl-${uid}-${state}`,
+                        );
+                        if (fl) {
+                            fl.innerHTML = "";
+                            frames.forEach((f) =>
+                                fl.appendChild(buildFrameItem(uid, state, f)),
+                            );
+                        }
+                    }
+                } catch {}
+            }
+
+            async function saveAudioConfig() {
+                if (!currentAudioUserId)
+                    return toast("Sélectionne un utilisateur d'abord.");
+                await saveUserAudioConfig(currentAudioUserId, true);
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // AVATAR PANEL
+            // ════════════════════════════════════════════════════════════════
+            // Config blink par user { uid → { freqMs } }
+            const blinkConfig = {};
+
+            function getUserBlinkFreq(uid) {
+                return blinkConfig[uid]?.freqMs ?? 4000;
+            }
+
+            function saveBlinkConfig(uid, freqMs) {
+                blinkConfig[uid] = { freqMs };
+                const all = JSON.parse(
+                    localStorage.getItem("pngtuber-blink") || "{}",
+                );
+                all[slugForUid(uid)] = { freqMs };
+                localStorage.setItem("pngtuber-blink", JSON.stringify(all));
+                try {
+                    new BroadcastChannel("pngtuber-config").postMessage({
+                        type: "blinkConfig",
+                        uid,
+                        freqMs,
+                    });
+                } catch {}
+            }
+
+            function loadBlinkConfigs() {
+                try {
+                    const raw = JSON.parse(
+                        localStorage.getItem("pngtuber-blink") || "{}",
+                    );
+                    const known = loadKnownUsers();
+                    // raw keys sont des slugs — on mappe slug→uid pour blinkConfig[uid]
+                    for (const [uid, info] of Object.entries(known)) {
+                        if (info.slug && raw[info.slug])
+                            blinkConfig[uid] = raw[info.slug];
+                    }
+                } catch {}
+            }
+
+            function renderUser(uid) {
+                const data = configData[uid];
+                const cont = document.getElementById("users-container");
+                const init = (data.displayName || uid)
+                    .slice(0, 2)
+                    .toUpperCase();
+                const freq = getUserBlinkFreq(uid);
+                // Chaque bloc user encapsule:
+                // - header identité + actions
+                // - réglage blink
+                // - grille des états avec upload/drag
+                const block = document.createElement("div");
+                block.className = "user-block";
+                block.id = `user-${uid}`;
+                block.innerHTML = `
+    <div class="user-head">
+      <div class="avatar-initials">${init}</div>
+      <div>
+        <div class="user-dname">${esc(data.displayName || uid)}</div>
+      </div>
+      <span class="speaking-pill" id="pill-${uid}"></span>
+      <button class="obs-btn ghost" style="margin-left:auto;font-size:0.7rem;" onclick="copyViewerUrl('${uid}')">📋 URL OBS</button>
+      <button class="obs-btn ghost" style="font-size:0.7rem;color:var(--danger);border-color:var(--danger);opacity:0.7;" onclick="deleteUser('${uid}')" title="Supprimer cet utilisateur">🗑</button>
+    </div>
+    <div class="blink-row" style="display:flex;align-items:center;gap:0.75rem;padding:0.5rem 1rem;border-bottom:1px solid var(--border);background:var(--bg3);">
+      <span style="font-size:0.7rem;color:var(--muted);white-space:nowrap;">👁 Blink toutes les</span>
+      <input type="range" min="1" max="15" step="0.5" value="${freq / 1000}"
+        style="flex:1;accent-color:var(--accent);"
+        oninput="this.nextElementSibling.textContent=this.value+'s'; saveBlinkConfig('${uid}', this.value*1000)">
+      <span style="font-family:var(--mono);font-size:0.72rem;color:var(--accent2);width:36px;">${freq / 1000}s</span>
+      <span style="font-size:0.68rem;color:var(--muted);">(nécessite une frame <em>_closed</em>)</span>
+    </div>
+    <div class="states-grid" id="sgrid-${uid}"></div>
+  `;
+                cont.appendChild(block);
+                rebuildUserGrid(uid);
+            }
+
+            function rebuildUserGrid(uid) {
+                const data = configData[uid];
+                if (!data) return;
+                const grid = document.getElementById(`sgrid-${uid}`);
+                if (!grid) return;
+                grid.innerHTML = "";
+
+                // ── Section niveaux audio : grille 2 lignes × N colonnes ───────
+                // Ligne 1 = open, Ligne 2 = closed, Colonnes = seuils (silent, low, medium, high, ...)
+                const audioStates = getAudioStates();
+
+                const audioSection = document.createElement("div");
+                audioSection.className = "states-row";
+                audioSection.innerHTML =
+                    '<div class="states-row-label">🔊 Niveaux audio</div>';
+
+                // Grille CSS : autant de colonnes que d'états audio
+                const audioGrid = document.createElement("div");
+                audioGrid.style.cssText = `display:grid;grid-template-columns:repeat(${audioStates.length},1fr);grid-template-rows:auto auto;gap:1px;background:var(--border);`;
+
+                // Ligne 1 — open (toutes les colonnes d'abord)
+                for (const s of audioStates) {
+                    if (!data.states[s]) data.states[s] = [];
+                    audioGrid.appendChild(
+                        buildStateCol(uid, s, data.states[s]),
+                    );
+                }
+                // Ligne 2 — closed (dans le même ordre)
+                for (const s of audioStates) {
+                    const k = s + "_closed";
+                    if (!data.states[k]) data.states[k] = [];
+                    audioGrid.appendChild(
+                        buildStateCol(uid, k, data.states[k]),
+                    );
+                }
+
+                audioSection.appendChild(audioGrid);
+                grid.appendChild(audioSection);
+
+                // ── Section émotions : même principe, 2 lignes × N émotions ────
+                if (audioConfig.emotions.length > 0) {
+                    const emSection = document.createElement("div");
+                    emSection.className = "states-row";
+                    emSection.innerHTML =
+                        '<div class="states-row-label">💬 Expressions</div>';
+
+                    const emGrid = document.createElement("div");
+                    emGrid.style.cssText = `display:grid;grid-template-columns:repeat(${audioConfig.emotions.length},1fr);grid-template-rows:auto auto;gap:1px;background:var(--border);`;
+
+                    // Ligne 1 — état actif (parole)
+                    for (const em of audioConfig.emotions) {
+                        if (!data.states[em.key]) data.states[em.key] = [];
+                        emGrid.appendChild(
+                            buildStateCol(uid, em.key, data.states[em.key]),
+                        );
+                    }
+                    // Ligne 2 — état silent post-hold
+                    for (const em of audioConfig.emotions) {
+                        const k = em.key + "_silent";
+                        if (!data.states[k]) data.states[k] = [];
+                        emGrid.appendChild(
+                            buildStateCol(uid, k, data.states[k]),
+                        );
+                    }
+
+                    emSection.appendChild(emGrid);
+                    grid.appendChild(emSection);
+                }
+            }
+
+            function addStateColToUser(uid, stateKey, label) {
+                const grid = document.getElementById(`sgrid-${uid}`);
+                if (
+                    !grid ||
+                    grid.querySelector(`.state-col[data-state="${stateKey}"]`)
+                )
+                    return;
+                grid.appendChild(buildStateCol(uid, stateKey, []));
+            }
+
+            function buildStateCol(uid, stateKey, frames) {
+                const isClosed = isClosedState(stateKey);
+                const isEmSilent = isEmotionSilent(stateKey);
+                const base = baseState(stateKey);
+                const emLabel = audioConfig.emotions.find(
+                    (e) => e.key === base || e.key === stateKey,
+                )?.label;
+                let label;
+                if (isClosed) label = (emLabel || base).toUpperCase() + " 👁";
+                else if (isEmSilent)
+                    label = (emLabel || base).toUpperCase() + " (silence)";
+                else
+                    label =
+                        emLabel ||
+                        stateKey.charAt(0).toUpperCase() + stateKey.slice(1);
+
+                const col = document.createElement("div");
+                col.className = "state-col";
+                col.dataset.state = stateKey;
+                col.style.borderTop =
+                    isClosed || isEmSilent
+                        ? `2px dashed ${stateColor(stateKey)}`
+                        : `2px solid ${stateColor(stateKey)}`;
+                if (isClosed) col.style.opacity = "0.8";
+
+                // ── Titre ──────────────────────────────────────────────────────
+                const title = document.createElement("div");
+                title.className = "state-col-title";
+
+                const dot = document.createElement("div");
+                dot.className = "sdot";
+                dot.style.background = stateColor(stateKey);
+                if (isClosed) dot.style.border = "1px solid var(--border)";
+
+                const lbl = document.createElement("span");
+                if (isClosed) {
+                    lbl.style.fontStyle = "italic";
+                    lbl.style.fontSize = "0.6rem";
+                }
+                lbl.textContent = label.toUpperCase();
+
+                title.appendChild(dot);
+                title.appendChild(lbl);
+
+                // Bouton positioner — data-* lu par délégation synchrone au top level
+                if (!isClosed && !isEmSilent) {
+                    const posBtn = document.createElement("button");
+                    posBtn.className = "js-open-pos";
+                    posBtn.title = "Régler la position des frames";
+                    posBtn.textContent = "📐";
+                    posBtn.dataset.uid = uid;
+                    posBtn.dataset.state = stateKey;
+                    posBtn.style.cssText =
+                        "margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.7rem;padding:1px 3px;border-radius:3px;";
+                    title.appendChild(posBtn);
+                }
+
+                // ── Liste frames ───────────────────────────────────────────────
+                const list = document.createElement("div");
+                list.className = "frames-list";
+                list.id = `fl-${uid}-${stateKey}`;
+
+                // ── Bouton add frame ───────────────────────────────────────────
+                const addbtn = document.createElement("button");
+                addbtn.className = "add-frame-btn";
+                addbtn.textContent = "+ frame(s)";
+                const input = document.createElement("input");
+                input.type = "file";
+                input.accept = "image/*";
+                input.multiple = true;
+                input.style.display = "none";
+                addbtn.appendChild(input);
+
+                col.appendChild(title);
+                col.appendChild(list);
+                col.appendChild(addbtn);
+
+                for (const f of frames)
+                    list.appendChild(buildFrameItem(uid, stateKey, f));
+                enableDrag(list, uid, stateKey);
+                addbtn.addEventListener("click", () => input.click());
+                input.addEventListener("change", (e) =>
+                    handleUpload(uid, stateKey, e.target.files),
+                );
+                return col;
+            }
+
+            function buildFrameItem(uid, stateKey, frame) {
+                const item = document.createElement("div");
+                item.className = "frame-item";
+                item.dataset.fid = frame.file;
+                item.draggable = true;
+                item.innerHTML = `
+    <span class="f-handle">⠿</span>
+    <img class="f-thumb" src="${frame.url}" alt="" onerror="this.style.opacity='0.3'">
+    <span class="f-name">${esc(frame.name || frame.file)}</span>
+    <button class="f-del" title="Supprimer">✕</button>
+  `;
+                item.querySelector(".f-del").addEventListener(
+                    "click",
+                    async () => {
+                        await deleteFrameFromServer(uid, stateKey, frame.file);
+                        configData[uid].states[stateKey] = configData[
+                            uid
+                        ].states[stateKey].filter((f) => f.file !== frame.file);
+                        item.remove();
+                        toast("Frame supprimée");
+                    },
+                );
+                return item;
+            }
+
+            function enableDrag(list, uid, stateKey) {
+                let dragged = null;
+                // Drag & drop HTML5 simple, puis persistance d'ordre côté backend.
+                list.addEventListener("dragstart", (e) => {
+                    dragged = e.target.closest(".frame-item");
+                    setTimeout(() => dragged?.classList.add("dragging"), 0);
+                });
+                list.addEventListener("dragend", () => {
+                    dragged?.classList.remove("dragging");
+                    dragged = null;
+                    persistOrder(list, uid, stateKey);
+                });
+                list.addEventListener("dragover", (e) => {
+                    e.preventDefault();
+                    const over = e.target.closest(".frame-item");
+                    if (!over || over === dragged) return;
+                    list.querySelectorAll(".frame-item").forEach((i) =>
+                        i.classList.remove("drag-over"),
+                    );
+                    over.classList.add("drag-over");
+                    const items = [...list.querySelectorAll(".frame-item")];
+                    if (items.indexOf(dragged) < items.indexOf(over))
+                        list.insertBefore(dragged, over.nextSibling);
+                    else list.insertBefore(dragged, over);
+                });
+                list.addEventListener("drop", (e) => {
+                    e.preventDefault();
+                    list.querySelectorAll(".frame-item").forEach((i) =>
+                        i.classList.remove("drag-over"),
+                    );
+                });
+            }
+
+            async function persistOrder(list, uid, stateKey) {
+                // Recompose l'ordre à partir du DOM actuel puis l'enregistre côté serveur.
+                const items = [...list.querySelectorAll(".frame-item")];
+                const frames = items
+                    .map((i) =>
+                        configData[uid].states[stateKey].find(
+                            (f) => f.file === i.dataset.fid,
+                        ),
+                    )
+                    .filter(Boolean);
+                configData[uid].states[stateKey] = frames;
+                await saveOrderToServer(uid, stateKey, frames);
+            }
+
+            async function handleUpload(uid, stateKey, files) {
+                const list = document.getElementById(`fl-${uid}-${stateKey}`);
+                let added = 0;
+                // Upload séquentiel: feedback précis fichier par fichier en cas d'erreur.
+                for (const file of files) {
+                    try {
+                        const frame = await uploadFrame(uid, stateKey, file);
+                        configData[uid].states[stateKey].push(frame);
+                        list.appendChild(buildFrameItem(uid, stateKey, frame));
+                        added++;
+                    } catch (err) {
+                        toast(`Erreur upload: ${err.message}`);
+                    }
+                }
+                if (added) toast(`${added} frame(s) uploadée(s)`);
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // OBS URL — une URL par userId
+            // ════════════════════════════════════════════════════════════════
+            function viewerUrl(userId) {
+                const host =
+                    document.getElementById("api-host").value.trim() ||
+                    "localhost:3000";
+                return `http://${host}/viewer.html?t=${userId}`;
+            }
+
+            function copyViewerUrl(userId) {
+                const url = viewerUrl(userId);
+                navigator.clipboard
+                    .writeText(url)
+                    .then(() =>
+                        toast(
+                            `URL copiée pour ${configData[userId]?.displayName || "cet utilisateur"}`,
+                        ),
+                    );
+            }
+
+            // Modal URL générique (bouton header)
+            async function deleteUser(uid) {
+                const name = configData[uid]?.displayName || "cet utilisateur";
+                if (
+                    !confirm(
+                        `Supprimer toutes les données de ${name} ?\nImages, config audio, expressions — tout sera effacé.`,
+                    )
+                )
+                    return;
+                try {
+                    const res = await fetch(`${apiBase()}/delete-user/${uid}`, {
+                        method: "POST",
+                    });
+                    if (!res.ok) {
+                        const e = await res.json().catch(() => ({}));
+                        return toast("Erreur: " + (e.error || res.status));
+                    }
+                    delete configData[uid];
+                    document.getElementById(`user-${uid}`)?.remove();
+                    const sel = document.getElementById("audio-user-select");
+                    sel?.querySelector(`option[value="${uid}"]`)?.remove();
+                    if (currentAudioUserId === uid) {
+                        currentAudioUserId = null;
+                        setAudioSaveIndicator("none");
+                    }
+                    const known = loadKnownUsers();
+                    delete known[uid];
+                    localStorage.setItem(USERS_KEY, JSON.stringify(known));
+                    try {
+                        localStorage.removeItem(
+                            `pngtuber-cfg-${slugForUid(uid)}`,
+                        );
+                    } catch {}
+                    toast(`✓ ${name} supprimé`);
+                } catch (err) {
+                    toast("Erreur: " + err.message);
+                }
+            }
+
+            function openModal() {
+                const host =
+                    document.getElementById("api-host").value.trim() ||
+                    "localhost:3000";
+                document.getElementById("modal-url").textContent =
+                    `http://${host}/viewer.html?t=VOTRE_TOKEN`;
+                document.getElementById("modal").classList.add("open");
+            }
+            function closeModal() {
+                document.getElementById("modal").classList.remove("open");
+            }
+            function copyUrl() {
+                navigator.clipboard
+                    .writeText(document.getElementById("modal-url").textContent)
+                    .then(() => toast("URL copiée !"));
+            }
+            function openViewer() {
+                window.open(
+                    `http://${document.getElementById("api-host").value.trim() || "localhost:3000"}/viewer.html`,
+                    "_blank",
+                );
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // UTILS
+            // ════════════════════════════════════════════════════════════════
+            function esc(s) {
+                return String(s || "")
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;");
+            }
+            let _toastT;
+            function toast(msg) {
+                const el = document.getElementById("toast");
+                el.textContent = msg;
+                el.classList.add("show");
+                clearTimeout(_toastT);
+                _toastT = setTimeout(() => el.classList.remove("show"), 2200);
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // INIT
+            // ════════════════════════════════════════════════════════════════
+            (async () => {
+                // Bootstrap UI:
+                // 1) préférences locales
+                // 2) hydratation users offline
+                // 3) sélection user audio
+                // 4) polling live
+                const savedHost = localStorage.getItem("pngtuber-apiHost");
+                if (savedHost)
+                    document.getElementById("api-host").value = savedHost;
+                document
+                    .getElementById("api-host")
+                    .addEventListener("change", () =>
+                        localStorage.setItem(
+                            "pngtuber-apiHost",
+                            document.getElementById("api-host").value,
+                        ),
+                    );
+
+                // Sliders hold/speed — liés à audioConfig courant, mis à jour par applyAudioConfigToUI()
+                document
+                    .getElementById("hold-ms")
+                    .addEventListener("input", function () {
+                        audioConfig.emotionHoldMs = +this.value;
+                        document.getElementById("hold-val").textContent =
+                            this.value + "ms";
+                        setAudioSaveIndicator("unsaved");
+                    });
+                document
+                    .getElementById("frame-speed")
+                    .addEventListener("input", function () {
+                        audioConfig.frameSpeed = +this.value;
+                        document.getElementById("speed-val").textContent =
+                            this.value + "ms";
+                        setAudioSaveIndicator("unsaved");
+                    });
+
+                loadBlinkConfigs();
+                loadUserEmotionConfigs();
+                renderKnownUsersOffline();
+                await populateUserSelect();
+
+                // Sélectionner automatiquement le dernier user édité si disponible
+                const lastSlug = localStorage.getItem("pngtuber-lastUser");
+                if (lastSlug) {
+                    const lastUid = uidFromSlug(lastSlug);
+                    if (lastUid) {
+                        document.getElementById("audio-user-select").value =
+                            lastUid;
+                        await onAudioUserChange(lastUid);
+                    }
+                }
+
+                await pollApi();
+                setInterval(pollApi, 800);
+
+                // ════════════════════════════════════════════════════════════════
+                // BOT SETUP
+                // ════════════════════════════════════════════════════════════════
+
+                // ════════════════════════════════════════════════════════════════
+                // BOT SETUP — source de vérité : .env via /bot-info
+                // Deux états possibles : token absent → form + msg "Aucun token"
+                //                        token présent mais invalide → form + msg "Token invalide"
+                // ════════════════════════════════════════════════════════════════
+
+                function setStatus(dotClass, msg, color) {
+                    document.getElementById("bot-config-dot").className =
+                        "api-dot " + (dotClass || "");
+                    const lbl = document.getElementById("bot-config-label");
+                    lbl.innerHTML = msg;
+                    lbl.style.color = color || "";
+                }
+
+                function showForm(feedbackMsg, feedbackOk, canCancel) {
+                    document.getElementById("token-form").style.display =
+                        "block";
+                    // Bouton Annuler uniquement si token valide existe (cas "changer le token")
+                    document.getElementById("cancel-token-btn").style.display =
+                        canCancel ? "inline-block" : "none";
+                    if (feedbackMsg !== undefined)
+                        showFeedback(feedbackMsg, feedbackOk);
+                }
+
+                function hideForm() {
+                    document.getElementById("token-form").style.display =
+                        "none";
+                    document.getElementById("token-input").value = "";
+                    hideFeedback();
+                }
+
+                async function loadBotStatus() {
+                    // Machine d'état setup bot:
+                    // connected | configured-but-disconnected | tokenInvalid | missing token
+                    try {
+                        const res = await fetch(`${apiBase()}/bot-info`, {
+                            cache: "no-store",
+                        });
+                        const data = await res.json();
+
+                        if (data.connected) {
+                            // ✅ Token valide + bot connecté à Discord
+                            setStatus(
+                                "ok",
+                                `Connecté — <strong style="color:var(--accent2)">${esc(data.tag)}</strong>`,
+                            );
+                            document.getElementById(
+                                "change-token-btn",
+                            ).style.display = "block";
+                            hideForm();
+                            if (data.id) {
+                                const perms = "3145728";
+                                document.getElementById(
+                                    "invite-url",
+                                ).innerHTML =
+                                    `<a href="https://discord.com/oauth2/authorize?client_id=${data.id}&permissions=${perms}&scope=bot"
+            target="_blank" style="color:var(--accent2)">
+            discord.com/oauth2/authorize?client_id=${data.id}&permissions=${perms}&scope=bot
+          </a>`;
+                            }
+                        } else if (data.configured) {
+                            // ⚠️ Token dans .env mais bot non connecté à Discord (non démarré ou erreur réseau Discord)
+                            setStatus(
+                                "err",
+                                "Token présent — bot non connecté à Discord",
+                                "var(--muted)",
+                            );
+                            document.getElementById(
+                                "change-token-btn",
+                            ).style.display = "block";
+                            hideForm();
+                        } else if (data.tokenInvalid) {
+                            // ❌ Token présent dans .env mais rejeté par Discord
+                            setStatus("err", "Token invalide", "var(--danger)");
+                            document.getElementById(
+                                "change-token-btn",
+                            ).style.display = "none";
+                            showForm(
+                                "⚠ Le token enregistré a été rejeté par Discord. Saisis-en un nouveau.",
+                                false,
+                                false,
+                            );
+                        } else {
+                            // ❌ Aucun token dans .env
+                            setStatus("", "Aucun token configuré");
+                            document.getElementById(
+                                "change-token-btn",
+                            ).style.display = "none";
+                            showForm(
+                                "Aucun token Discord configuré. Saisis le token de ton bot pour démarrer.",
+                                false,
+                                false,
+                            );
+                        }
+                    } catch {
+                        // Bot non joignable (pas encore démarré)
+                        setStatus("err", "Bot non joignable", "var(--muted)");
+                        // Ne pas afficher le form — l'utilisateur n'a peut-être juste pas démarré le bot
+                        hideForm();
+                    }
+                }
+
+                // Bouton "Changer le token" — ouvre le form avec possibilité d'annuler
+                function showTokenForm() {
+                    showForm(undefined, undefined, true);
+                }
+
+                function cancelTokenForm() {
+                    hideForm();
+                }
+
+                function toggleTokenVisibility() {
+                    const input = document.getElementById("token-input");
+                    const btn = document.getElementById("toggle-vis-btn");
+                    if (input.type === "password") {
+                        input.type = "text";
+                        btn.textContent = "🙈 Masquer";
+                    } else {
+                        input.type = "password";
+                        btn.textContent = "👁 Voir";
+                    }
+                }
+
+                function showFeedback(msg, ok) {
+                    const el = document.getElementById("token-feedback");
+                    el.textContent = msg;
+                    el.style.display = "block";
+                    el.style.background = ok
+                        ? "rgba(0,217,184,0.1)"
+                        : "rgba(231,76,108,0.1)";
+                    el.style.color = ok ? "var(--accent2)" : "var(--danger)";
+                    el.style.border = ok
+                        ? "1px solid rgba(0,217,184,0.3)"
+                        : "1px solid rgba(231,76,108,0.3)";
+                }
+
+                function hideFeedback() {
+                    document.getElementById("token-feedback").style.display =
+                        "none";
+                }
+
+                async function saveToken() {
+                    const token = document
+                        .getElementById("token-input")
+                        .value.trim();
+                    if (!token) return showFeedback("Saisis un token.", false);
+
+                    const btn = document.getElementById("save-token-btn");
+                    btn.textContent = "Vérification...";
+                    btn.disabled = true;
+                    hideFeedback();
+
+                    try {
+                        const res = await fetch(`${apiBase()}/bot-token`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ token }),
+                        });
+                        const data = await res.json();
+
+                        if (data.ok) {
+                            showFeedback(
+                                `✓ Token valide — ${data.tag}. Le bot redémarre...`,
+                                true,
+                            );
+                            setTimeout(() => {
+                                hideForm();
+                                loadBotStatus();
+                            }, 2500);
+                        } else {
+                            showFeedback(`✗ ${data.error}`, false);
+                        }
+                    } catch {
+                        showFeedback(
+                            "Bot non joignable. Vérifie qu'il est bien démarré.",
+                            false,
+                        );
+                    } finally {
+                        btn.textContent = "Vérifier et sauvegarder";
+                        btn.disabled = false;
+                    }
+                }
+
+                function buildPositionerUrl(uid, stateKey) {
+                    const host =
+                        document.getElementById("api-host").value.trim() ||
+                        "localhost:3000";
+                    const saved = localStorage.getItem("pngtuber-canvasSize");
+                    const { w: cw, h: ch } = saved
+                        ? JSON.parse(saved)
+                        : { w: 800, h: 800 };
+                    const slug = slugForUid(uid);
+                    return `http://${host}/positioner.html?t=${encodeURIComponent(uid)}&state=${encodeURIComponent(stateKey)}&w=${cw}&h=${ch}`;
+                }
+
+                function openPositioner(uid, stateKey) {
+                    const url = buildPositionerUrl(uid, stateKey);
+                    const win = window.open(url, "_blank");
+                    if (!win)
+                        toast(
+                            "Pop-up bloqué — autorise les pop-ups pour ce site.",
+                        );
+                }
+
+                // Charger le statut bot au démarrage et toutes les 5s
+                loadBotStatus();
+                setInterval(loadBotStatus, 5000);
+            })();
+        </script>
+    </body>
+</html>
