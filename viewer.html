@@ -57,7 +57,7 @@ const blinkConfig = {};
 async function loadConfigs() {
   // Charger la config depuis le bot pour ce userId spécifique
   const params = new URLSearchParams(location.search);
-  const uid    = params.get('userId');
+  const uid    = params.get('t') || params.get('userId'); // 't' = token opaque
   if (uid) {
     try {
       const port = params.get('port') || '3000';
