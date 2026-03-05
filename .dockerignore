@@ -1,0 +1,16 @@
+node_modules
+build
+dist
+scripts
+installer
+data
+images
+meta
+.env
+.git
+.gitignore
+CLAUDE.md
+DOCUMENTATION.md
+*.exe
+*.ps1
+*.bat
