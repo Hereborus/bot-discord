@@ -5,7 +5,7 @@
         <title>Position Editor</title>
         <link rel="stylesheet" href="styles.css" />
     </head>
-    <body>
+    <body class="positioner-body">
         <header>
             <div class="logo">
                 PNG<em>Tuber</em> ·
@@ -184,7 +184,7 @@
             // PARAMS
             // ════════════════════════════════════════════════════════════════
             const params = new URLSearchParams(location.search);
-            const USER_ID = params.get("userId") || "";
+            const USER_ID = params.get("t") || params.get("userId") || "";
             const STATE = params.get("state") || "low";
             const API_BASE = `http://${location.host}`;
 
@@ -366,7 +366,15 @@
             // ════════════════════════════════════════════════════════════════
             // LAYERS CANVAS
             // ════════════════════════════════════════════════════════════════
+            // AbortController pour nettoyer les event listeners à chaque re-render
+            let layerAbortCtrl = null;
+
             function renderLayers() {
+                // Détacher les anciens listeners avant de recréer
+                if (layerAbortCtrl) layerAbortCtrl.abort();
+                layerAbortCtrl = new AbortController();
+                const signal = layerAbortCtrl.signal;
+
                 const cont = document.getElementById("layers-container");
                 cont.innerHTML = "";
 
@@ -405,13 +413,13 @@
                         applyTransform(f.file);
                         updateSliders(positions[f.file]);
                         updateFrameCardPos(f.file);
-                    });
+                    }, { signal });
                     window.addEventListener("mouseup", () => {
                         if (dragging) {
                             dragging = false;
                             saveAll();
                         }
-                    });
+                    }, { signal });
 
                     cont.appendChild(layer);
                     applyTransform(f.file);
