@@ -1,0 +1,14 @@
+services:
+  pngtuber-bot:
+    build: .
+    container_name: pngtuber-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATA_ROOT=/app/data
+      - PNGTUBER_NO_BROWSER=1
+      - LEVELS_PORT=3000
+    ports:
+      - "${LEVELS_PORT:-3000}:3000"
+    volumes:
+      - ./data:/app/data
