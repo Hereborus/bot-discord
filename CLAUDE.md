@@ -58,7 +58,7 @@ All server logic lives in one file: Discord bot, HTTP server, audio pipeline, au
 
 ### Frontend — Three standalone HTML pages with inline `<script>`
 
-All pages embed their JavaScript inline. Legacy external `.js` files have been removed.
+All pages embed their JavaScript inline. The external files `script.js`, `viewer.js`, and `positioner.js` still exist on disk but are **not referenced by any HTML page** — kept as historical reference only.
 
 - **`index.html`** — Unified control panel (admin + client). Role-based visibility: admin sees all tabs, client sees only their own avatar. Frame upload/reorder/delete, audio config, voice channel control, fingerprint recording, viewer URL generator. New tabs: Sessions (create/invite/end), Subscriptions (tier info, admin management, streamer seats), App Tokens (list/revoke), Notification bell with real-time dropdown.
 - **`viewer.html`** — OBS browser source. Uses WebSocket (fallback: HTTP poll), renders flipbook animation with auto-blink. Emotion detection handled server-side with hysteresis. Query params: `?t=token&poll=100&size=200px&debug=0`.
@@ -89,12 +89,17 @@ cp .env.example .env   # Edit with your tokens
 docker compose up -d
 ```
 
+## Windows Standalone Build
+
+A standalone Windows executable (`dist/pngtuber-bot.exe`) and self-contained installer (`dist/PNGTuberBot-Setup.exe`) can be built via PowerShell scripts in `scripts/`. The installer bundles the exe, Node runtime, and a setup script so users don't need Docker or Node installed. Build scripts: `build-installer.ps1`, `build-installer-simple.ps1`, `build-installer-standalone.ps1`.
+
 ## Code Conventions
 
 - Functional style, no classes. Promise-based async/await.
 - Direct DOM manipulation on frontend (no framework).
 - Comments and documentation are in **French**.
-- Security: path traversal prevention via `SAFE_STATE_KEY`/`SAFE_FILENAME` regex + `path.resolve()` + `startsWith()`, magic byte validation on uploads, SVG rejection, one-way user ID hashing, body size limits (10 MB), config validation via `ALLOWED_CONFIG_KEYS` whitelist, rate limiting (upload 30/min, auth 10/min, device 5/min), security headers (X-Content-Type-Options, HSTS, Referrer-Policy), CORS origin validation, WebSocket origin check, `TRUST_PROXY` for safe IP extraction, app tokens limited to client role.
+- Security: path traversal prevention via `SAFE_STATE_KEY`/`SAFE_FILENAME` regex + `path.resolve()` + `startsWith()`, SVG rejection, one-way user ID hashing, body size limits (10 MB), config validation via `ALLOWED_CONFIG_KEYS` whitelist, rate limiting (upload 30/min, auth 10/min, device 5/min), security headers (X-Content-Type-Options, HSTS, Referrer-Policy), CORS origin validation, WebSocket origin check, `TRUST_PROXY` for safe IP extraction, app tokens limited to client role.
+- **Image sanitisation:** All uploads are re-encoded through `sharp` to WebP (stripping metadata and neutralising malicious payloads). This reprocessing *is* the primary sanitisation step — magic byte checks are a secondary guard.
 
 ## Additional Reference
 
