@@ -2117,7 +2117,7 @@ async function handleDeleteUser(req, res, ctx) {
 async function handleAuthLogin(req, res, ctx) {
     // Rate limit: 10 tentatives login par minute par IP
     const clientIp = getClientIp(req);
-    if (rateLimit(`auth:${clientIp}`, 10, 60_000)) {
+    if (rateLimit(`auth:${clientIp}`, 30, 60_000)) {
         res.writeHead(429, { "Content-Type": "text/html; charset=utf-8" });
         res.end("<h2>Trop de tentatives</h2><p>Réessayez dans une minute.</p>");
         return;
