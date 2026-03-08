@@ -22,7 +22,7 @@ COPY --from=build /app/node_modules ./node_modules
 # Copier le code source
 COPY package.json ./
 COPY index.js ./
-COPY index.html viewer.html positioner.html client.html ./
+COPY index.html viewer.html positioner.html ./
 COPY styles.css ./
 
 # Répertoire de données persistantes
