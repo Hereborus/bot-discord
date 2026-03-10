@@ -73,6 +73,13 @@ const STATIC_ROOT = SOURCE_ROOT;
 const DATA_ROOT = process.env.DATA_ROOT || SOURCE_ROOT;
 
 // ── Validation magic bytes pour images ──────────────────────────
+// POURQUOI LES MAGIC BYTES ?
+// L'extension d'un fichier (.png, .jpg) n'est pas fiable — un attaquant peut
+// renommer un fichier .exe en .png pour tromper le serveur.
+// Les "magic bytes" sont les premiers octets du fichier, définis par le format
+// lui-même et indépendants du nom. Ex: tout fichier PNG commence par 0x89504E47.
+// NOTE : cette vérification est une garde secondaire. La vraie sanitisation
+// est le re-encodage via sharp() qui reconstruit l'image de zéro.
 const IMAGE_SIGNATURES = {
     '.png':  [Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])],
     '.jpg':  [Buffer.from([0xFF, 0xD8, 0xFF])],
@@ -94,21 +101,52 @@ function validateMagicBytes(buffer, ext) {
 }
 
 // ── Validation stateKey / noms de fichier ───────────────────────
+// POURQUOI CES REGEX ?
+// Protection contre les attaques de "path traversal" (traversée de répertoire).
+// Sans validation, un attaquant pourrait envoyer stateKey = "../../etc/passwd"
+// pour lire ou écraser des fichiers système. On autorise uniquement les
+// caractères alphanumériques, tirets et underscores — rien qui puisse former
+// un chemin relatif. La validation est complétée par path.resolve() + startsWith()
+// plus bas pour une double protection.
 const SAFE_STATE_KEY = /^[a-zA-Z0-9_-]{1,64}$/;
 const SAFE_FILENAME = /^[a-zA-Z0-9._-]{1,255}$/;
 
 // ── Trusted proxy — ne lire X-Forwarded-For que si un reverse proxy est configuré ──
+// POURQUOI TRUST_PROXY ?
+// Derrière un reverse proxy (Nginx, Traefik, Pangolin…) l'IP visible par Node
+// est toujours l'IP du proxy (ex: 127.0.0.1), pas celle du client réel.
+// Le proxy transmet la vraie IP dans l'en-tête "X-Forwarded-For".
+// DANGER : si on lit cet en-tête sans vérification, n'importe quel client peut
+// forger "X-Forwarded-For: 1.2.3.4" pour usurper une IP et contourner le rate limit.
+// Solution : n'activer la lecture de X-Forwarded-For que si TRUST_PROXY=true,
+// c'est-à-dire quand on sait qu'un proxy de confiance est en frontal.
 const TRUST_PROXY = process.env.TRUST_PROXY === 'true' || process.env.TRUST_PROXY === '1';
 
 function getClientIp(req) {
     if (TRUST_PROXY) {
         const xff = req.headers['x-forwarded-for'];
+        // X-Forwarded-For peut contenir plusieurs IPs séparées par des virgules
+        // (chaîne de proxies). On prend la première, qui est le client original.
         if (xff) return xff.split(',')[0].trim();
     }
     return req.socket?.remoteAddress || 'unknown';
 }
 
 // ── Rate limiter simple en mémoire ──────────────────────────────
+// POURQUOI UN RATE LIMITER ?
+// Sans limite, un attaquant peut bombarder une route (ex: /auth/login) avec
+// des milliers de requêtes par seconde : brute-force de mots de passe,
+// scraping, déni de service applicatif.
+//
+// ALGORITHME : "fixed window" (fenêtre fixe)
+// Pour chaque clé (ex: "auth:1.2.3.4"), on maintient un compteur et une
+// date de réinitialisation. Si le compteur dépasse maxRequests avant la fin
+// de la fenêtre, on rejette la requête (retourne true = rate limited).
+// Avantage : très simple, O(1). Inconvénient mineur : pointe possible en
+// bordure de fenêtre (voir "sliding window" pour une version plus robuste).
+//
+// La clé combine la route ET l'IP pour que le rate limit soit par-IP,
+// pas global (ex: "upload:192.168.1.1" vs "auth:192.168.1.1").
 const rateLimitBuckets = new Map(); // key → { count, resetAt }
 function rateLimit(key, maxRequests, windowMs) {
     const now = Date.now();
@@ -171,6 +209,19 @@ let followError = null; // { channelName, userName, ts } — erreur de suivi ré
 // ════════════════════════════════════════════════════════════════
 // SQLITE DATABASE — remplace les fichiers JSON meta/config/permissions
 // ════════════════════════════════════════════════════════════════
+// POURQUOI SQLITE ?
+// Légèreté : pas de serveur séparé, la base est un simple fichier sur disque.
+// Idéal pour un bot mono-instance où on n'a pas besoin de PostgreSQL.
+//
+// PRAGMA journal_mode = WAL (Write-Ahead Logging)
+// Mode d'écriture par défaut : les écritures bloquent les lectures (journal DELETE).
+// Avec WAL, les écritures se font dans un fichier journal séparé et les
+// lectures peuvent continuer en parallèle. Résultat : bien meilleure
+// concurrence pour un serveur HTTP avec plusieurs requêtes simultanées.
+//
+// PRAGMA foreign_keys = ON
+// SQLite n'applique pas les clés étrangères (ON DELETE CASCADE etc.) par
+// défaut, pour des raisons de compatibilité. Il faut l'activer explicitement.
 const DB_PATH = path.join(DATA_ROOT, "pngtuber.db");
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
@@ -300,7 +351,15 @@ db.exec(`
     CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(discord_id, read);
 `);
 
-// Prepared statements (compilés une seule fois, réutilisés)
+// ── Prepared statements — pourquoi les utiliser ? ───────────────
+// INJECTION SQL : sans précautions, assembler une requête avec des données
+// utilisateur crée une faille critique. Ex: token = "'; DROP TABLE users;--"
+// → la requête devient "SELECT * FROM users WHERE token = ''; DROP TABLE users;--"
+//
+// Les "prepared statements" (requêtes préparées) séparent le code SQL des
+// données : le moteur compile la requête une seule fois, puis remplace les "?"
+// par les valeurs passées en paramètre SANS les interpréter comme du SQL.
+// Avantage double : sécurité (injection impossible) + performance (compilation cachée).
 const stmts = {
     getUser:          db.prepare("SELECT * FROM users WHERE token = ?"),
     upsertUser:       db.prepare(`INSERT INTO users (token, display_name, config_json, updated_at)
@@ -453,6 +512,20 @@ dotenv.config({ path: ENV_PATH });
 // SYSTÈME DE TOKEN — userId Discord → token opaque 16 hex
 // HMAC-SHA256(userId, SECRET) — non-réversible sans la clé secrète
 // ════════════════════════════════════════════════════════════════
+// POURQUOI NE PAS EXPOSER LE userId DISCORD ?
+// Le userId Discord est une donnée personnelle stable et publique. L'exposer
+// dans les URLs ou l'API permettrait :
+//   - De corréler les avatars d'un utilisateur sur plusieurs services
+//   - De scraper facilement toute la base utilisateurs
+//   - D'attaques ciblées (spam, phishing) connaissant un userId
+//
+// SOLUTION : HMAC-SHA256
+// On calcule un "token" = les 16 premiers caractères hex de HMAC(userId, SECRET).
+// HMAC = Hash-based Message Authentication Code — c'est une fonction à sens unique.
+// Sans connaître SECRET (gardé uniquement côté serveur), il est impossible de
+// retrouver le userId à partir du token.
+// Le token est déterministe : même userId + même secret = même token.
+// Ainsi on peut recalculer le token à la demande sans le stocker.
 const HASH_SECRET = process.env.USER_HASH_SECRET;
 
 // hash stable du userId — utilisé pour nommer les fichiers sur disque
@@ -492,6 +565,18 @@ function stateDirByToken(token, sk) {
 // ════════════════════════════════════════════════════════════════
 // AUDIO CONFIG
 // ════════════════════════════════════════════════════════════════
+// Constantes du pipeline audio — modifiez avec précaution :
+//   sampleRate   : 48000 Hz — fréquence standard Discord/Opus (Nyquist: capte jusqu'à 24kHz)
+//   sampleInterval: 50 ms — fréquence d'analyse (20 fois/seconde). Plus bas = plus réactif
+//                  mais plus de CPU. 50ms est un bon compromis pour l'animation avatar.
+//   durationWindow: 100 ms — longueur de la fenêtre de lissage. Réduit le clignotement
+//                  sans trop retarder la détection de parole.
+//   fftSize      : 1024 points — résolution de la FFT. Résolution fréquentielle = 48000/1024
+//                  ≈ 46.9 Hz/bin. Plus grand = meilleure résolution mais plus de calcul.
+//   freqBands    : bandes fréquentielles pour la détection d'émotion :
+//                  low (20-500 Hz) = fondamentale vocale + basses
+//                  mid (500-2kHz)  = formants principaux, intelligibilité
+//                  high (2-10kHz)  = sifflantes, agressivité, brillance
 const AUDIO = {
     sampleRate: 48000,
     sampleInterval: 50,
@@ -562,6 +647,19 @@ const BASE_URL = (() => {
 })();
 
 // ── CORS dynamique ──────────────────────────────────────────────
+// POURQUOI LE CORS (Cross-Origin Resource Sharing) ?
+// Les navigateurs appliquent la "same-origin policy" : une page sur
+// https://example.com ne peut pas faire de fetch vers https://other.com
+// par défaut (protection contre les attaques CSRF et vol de données).
+//
+// CORS est le mécanisme qui permet d'assouplir cette règle de façon contrôlée.
+// Le serveur annonce via des en-têtes quelles origines sont autorisées.
+//
+// PIÈGE avec les credentials (cookies, sessions) :
+// "Access-Control-Allow-Origin: *" est interdit si "Access-Control-Allow-Credentials: true".
+// Il faut spécifier l'origine exacte. C'est pourquoi on valide l'origin de la
+// requête contre une liste blanche (localhost, BASE_URL, CORS_ORIGINS) et on
+// retourne l'origin validée — pas un wildcard "*".
 function getAllowedOrigins() {
     const origins = new Set([
         `http://localhost:${PORT}`,
@@ -593,6 +691,26 @@ function corsHeaders(req) {
 }
 
 // ── Headers de sécurité communs ──────────────────────────────────
+// Ces en-têtes HTTP instrucent le navigateur sur comment traiter les réponses.
+//
+// X-Content-Type-Options: nosniff
+//   Empêche le navigateur de "deviner" le type MIME d'un fichier.
+//   Sans cela, un PNG uploadé contenant du JS pourrait être exécuté par IE/Edge.
+//
+// X-XSS-Protection: 1; mode=block
+//   Active le filtre XSS intégré des anciens navigateurs (Chrome, IE).
+//   Obsolète sur les navigateurs modernes mais inoffensif.
+//
+// Referrer-Policy: strict-origin-when-cross-origin
+//   Contrôle quelles infos sont envoyées dans l'en-tête "Referer" lors des
+//   navigations. "strict-origin-when-cross-origin" envoie uniquement l'origine
+//   (pas le chemin complet) pour les requêtes cross-origin — évite de fuiter
+//   des paramètres d'URL sensibles vers des sites tiers.
+//
+// Strict-Transport-Security (HSTS)
+//   Force le navigateur à utiliser HTTPS pour toutes les futures requêtes vers
+//   ce domaine pendant 1 an. Protège contre le downgrade HTTP (man-in-the-middle).
+//   Activé uniquement si BASE_URL commence par https://.
 function securityHeaders(extra = {}) {
     const isHttps = BASE_URL.startsWith('https://');
     const h = {
@@ -815,6 +933,20 @@ function validateUserConfig(cfg) {
 // ════════════════════════════════════════════════════════════════
 // TIERS PREMIUM — limites et vérification
 // ════════════════════════════════════════════════════════════════
+// Architecture de monétisation à 3 niveaux :
+//   free     → limites de frames/états, émotions désactivées
+//   premium  → toutes fonctionnalités débloquées
+//   streamer → comme premium, mais l'abonnement couvre N "seats" (places),
+//              permettant à un streamer de distribuer l'accès premium à ses viewers
+//
+// getUserTier() résout le tier effectif d'un utilisateur dans l'ordre :
+//   1. Abonnement direct actif (table subscriptions)
+//   2. Couverture via un seat streamer (table subscription_seats)
+//   3. Défaut : free
+//
+// Les middlewares loadTier + requirePremium s'enchaînent :
+//   loadTier    → injecte ctx.tier et ctx.tierLimits dans le contexte
+//   requirePremium → bloque la route si tier === 'free'
 const TIER_LIMITS = {
     free: {
         maxStates: 2, maxClosedStates: 2, maxFramesPerState: 3,
@@ -871,6 +1003,25 @@ function requirePremium(req, res, ctx) {
 // ════════════════════════════════════════════════════════════════
 // MULTIPART PARSER
 // ════════════════════════════════════════════════════════════════
+// Les uploads de fichiers utilisent le format "multipart/form-data".
+// Ce format encapsule plusieurs "parts" (champs texte + fichiers) dans un
+// même corps HTTP, séparées par un "boundary" (séparateur unique).
+//
+// Structure d'une requête multipart :
+//   --<boundary>\r\n
+//   Content-Disposition: form-data; name="token"\r\n
+//   \r\n
+//   abc123\r\n
+//   --<boundary>\r\n
+//   Content-Disposition: form-data; name="image"; filename="avatar.png"\r\n
+//   Content-Type: image/png\r\n
+//   \r\n
+//   <octets binaires de l'image>\r\n
+//   --<boundary>--\r\n    ← fin du body
+//
+// On n'utilise pas de bibliothèque externe (busboy, formidable) pour garder
+// zéro dépendance supplémentaire. Ce parser minimal suffit pour le cas simple
+// d'un formulaire avec exactement un token + une image.
 function indexOf(buf, search, start = 0) {
     for (let i = start; i <= buf.length - search.length; i++) {
         let ok = true;
@@ -917,6 +1068,24 @@ function parseMultipart(body, boundary) {
 // ════════════════════════════════════════════════════════════════
 // SESSIONS & AUTHENTIFICATION OAuth2 Discord
 // ════════════════════════════════════════════════════════════════
+// FLUX OAuth2 (Authorization Code Flow) :
+//   1. /auth/login → redirige vers discord.com/oauth2/authorize?state=RANDOM
+//      Le "state" est un token aléatoire stocké côté serveur pour prévenir
+//      les attaques CSRF (Cross-Site Request Forgery).
+//   2. Discord demande la permission à l'utilisateur, puis redirige vers
+//      /auth/callback?code=XXX&state=YYY
+//   3. On vérifie que state=YYY correspond bien à ce qu'on a envoyé.
+//   4. On échange code=XXX contre un access_token via l'API Discord (requête serveur-serveur).
+//   5. On récupère le profil Discord (/users/@me) avec cet access_token.
+//   6. On crée une session locale (Map en mémoire) et on pose un cookie signé.
+//
+// COOKIES SIGNÉS (HMAC) :
+//   La valeur du cookie = sessionId + "." + HMAC(sessionId, SESSION_SECRET).
+//   Si un attaquant modifie le sessionId dans son cookie, la signature ne
+//   correspondra plus et on rejettera la requête. Cela empêche la falsification
+//   de cookies sans connaître le secret serveur.
+//   Note : timingSafeEqual() est utilisé pour comparer les signatures, évitant
+//   les attaques par "timing" (deviner octet par octet selon le temps de réponse).
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 const sessions = new Map();
 const oauthStates = new Map();
@@ -1005,6 +1174,19 @@ function createSession(discordUser, userGuildIds = []) {
 }
 
 // ── Middleware d'authentification ────────────────────────────────
+// PATTERN MIDDLEWARE :
+// Un middleware est une fonction (req, res, ctx) → bool.
+// Si elle retourne false, la chaîne s'arrête (réponse déjà envoyée).
+// Si elle retourne true, le handler suivant s'exécute.
+//
+// requireAuth supporte deux modes d'authentification :
+//   1. Cookie de session (navigateur web via OAuth2)
+//   2. Bearer token (app/agent local via Device Auth Flow)
+//
+// Pour le Bearer token, on ne stocke JAMAIS le token brut en base.
+// On stocke uniquement son hash SHA-256. Ainsi, même si la DB est compromise,
+// les tokens restent inutilisables (on ne peut pas retrouver le token brut
+// à partir du hash sans le token original).
 function requireAuth(req, res, ctx) {
     if (!AUTH_ENABLED) {
         // Injecter une session fictive pour éviter les crashes sur ctx.session.discordId
@@ -1065,6 +1247,14 @@ function requireAuth(req, res, ctx) {
 }
 
 // ── Middleware admin / client ────────────────────────────────────
+// RBAC (Role-Based Access Control) — contrôle d'accès par rôles :
+//   - admin   : accès complet (bot, permissions, abonnements…)
+//   - client  : peut uniquement lire/modifier ses propres données
+//   - viewer  : lecture seule (routes publiques)
+//
+// requireClientOrAdmin vérifie que le token dans la requête appartient
+// bien à l'utilisateur connecté (un client ne peut pas modifier le profil
+// d'un autre client même s'il connaît son token).
 function requireAdmin(req, res, ctx) {
     if (!AUTH_ENABLED) return true;
     if (!ctx.session || ctx.session.role !== 'admin') {
@@ -1293,6 +1483,27 @@ function shutdownApp() {
 // ════════════════════════════════════════════════════════════════
 // MINI-ROUTEUR & HANDLERS
 // ════════════════════════════════════════════════════════════════
+// POURQUOI PAS EXPRESS ?
+// Express ajoute ~1 Mo de dépendances pour un problème qu'on résout
+// en ~30 lignes. Le serveur HTTP natif de Node (node:http) est très
+// capable. Implémenter un mini-routeur permet de :
+//   - Contrôler exactement le comportement (middleware, params, auth)
+//   - Éviter les vulnérabilités de la chaîne de dépendances (supply chain)
+//   - Avoir un code entièrement auditable
+//
+// FONCTIONNEMENT :
+//   route(METHOD, '/path/:param', ...middlewares, handler)
+//   → enregistre la route dans le tableau routes[]
+//
+//   matchRoute(method, pathname)
+//   → parcourt routes[] et teste chaque pattern :
+//       - correspondance exacte : '/status' === '/status'
+//       - paramètres dynamiques : '/frames/:token' match '/frames/abc123'
+//         et extrait { token: 'abc123' } dans ctx.params
+//       - wildcard suffix : '/images/*' match tout chemin commençant par '/images/'
+//
+//   Dans le handler HTTP principal (createServer), on appelle les middlewares
+//   en séquence. Si l'un retourne false, on s'arrête (réponse déjà envoyée).
 const routes = [];
 
 function route(method, pattern, ...handlers) {
@@ -2567,6 +2778,25 @@ async function handleResolveViewerSession(req, res, ctx) {
 // ════════════════════════════════════════════════════════════════
 // DEVICE AUTH FLOW — authentification mini-agent local
 // ════════════════════════════════════════════════════════════════
+// PROBLÈME : une app locale (agent, plugin OBS…) ne peut pas faire le flux
+// OAuth2 classique car elle n'a pas d'URL de callback accessible depuis Discord.
+//
+// SOLUTION : OAuth2 Device Authorization Grant (RFC 8628)
+// C'est le même flux que pour connecter une Apple TV ou une console de jeux.
+//
+// ÉTAPES :
+//   1. L'app appelle POST /api/device/authorize → reçoit { deviceCode, userCode }
+//   2. L'app affiche à l'utilisateur : "Allez sur https://bot.../device et entrez XXXX-XXXX"
+//   3. L'utilisateur, déjà connecté dans le navigateur, ouvre la page et approuve.
+//      GET /api/device/verify?code=XXXX-XXXX → lie le deviceCode à la session Discord
+//   4. L'app poll (toutes les 5s) POST /api/device/poll?deviceCode=... jusqu'à
+//      recevoir { status: 'approved', appToken: '...' }
+//   5. L'app stocke l'appToken et l'utilise ensuite en Bearer token dans les requêtes.
+//
+// SÉCURITÉ :
+//   - Les deviceCodes expirent après 15 minutes
+//   - L'appToken final est un token aléatoire 32 octets → seul son SHA-256 est en DB
+//   - Les appTokens sont limités au rôle 'client' (jamais admin)
 const deviceAuthRequests = new Map(); // deviceCode → { userCode, discordId?, status, deviceName, expiresAt, appToken? }
 
 function generateUserCode() {
@@ -3529,8 +3759,28 @@ function computeFreqBands(buffer) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// AUDIO SUBSCRIPTION
+// AUDIO SUBSCRIPTION — pipeline d'analyse vocale
 // ════════════════════════════════════════════════════════════════
+// CHAÎNE DE TRAITEMENT :
+//   Opus (Discord) → PCM 16-bit stéréo 48kHz → analyse → Map userLevels
+//
+// OPUS est le codec audio utilisé par Discord : haute qualité, faible latence.
+// PRISM-MEDIA décode chaque frame Opus en PCM brut (octets → entiers 16-bit).
+//
+// ANALYSE toutes les 50ms (sampleInterval) :
+//   1. RMS (Root Mean Square) → niveau sonore instantané
+//      RMS = sqrt(moyenne des carrés des échantillons) — approxime le volume perçu
+//   2. dB = 20 × log₁₀(RMS / 32768) — conversion en décibels (échelle logarithmique)
+//      −100 dB = silence, 0 dB = maximum théorique
+//   3. Fenêtre glissante (100ms) → lissage des micro-variations (évite le clignotement)
+//   4. FFT (Fast Fourier Transform, 1024 points) → décomposition en fréquences
+//      Chaque "bin" couvre binHz = 48000/1024 ≈ 46.9 Hz
+//      → 3 bandes extraites : low (20-500 Hz), mid (500-2000 Hz), high (2000-10000 Hz)
+//   5. ZCR (Zero Crossing Rate) → taux de passage par zéro → rugosité vocale
+//   6. Energy Variance → variance du volume → stabilité (rire vs parole calme)
+//   7. Centroïde spectral → fréquence "center of gravity" → brillance de la voix
+//
+// Toutes ces métriques alimentent la détection d'émotion (voir computeEmotion).
 // Historique fréquences par user pour calcul de deltas
 const userFreqHistory = new Map();
 // Baseline vocale par user (EMA) — calibration continue
