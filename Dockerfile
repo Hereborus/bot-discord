@@ -1,29 +1,43 @@
-# ── Build stage ──────────────────────────────────────────────────
-FROM node:22-alpine AS build
+# ── Stage 1 : build frontend React ───────────────────────────────
+FROM node:22-alpine AS frontend-build
 
-# Dépendances système pour compiler @discordjs/opus + sodium-native (modules natifs C++)
+WORKDIR /app/client
+COPY client/package.json client/package-lock.json* ./
+RUN npm install
+
+COPY client/ ./
+# Build Vite → output dans /app/dist (configuré dans vite.config.js outDir: ../dist)
+RUN npm run build
+
+# ── Stage 2 : build backend (modules natifs C++) ──────────────────
+FROM node:22-alpine AS backend-build
+
 RUN apk add --no-cache python3 make g++ gcc libc-dev vips-dev
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 
-# ── Runtime stage ────────────────────────────────────────────────
+# ── Stage 3 : image finale runtime ───────────────────────────────
 FROM node:22-alpine
 
-# libstdc++ nécessaire au runtime pour @discordjs/opus et sodium-native
+# libstdc++ pour @discordjs/opus + sodium-native, vips pour sharp
 RUN apk add --no-cache libstdc++ vips
 
 WORKDIR /app
 
-# Copier les modules compilés depuis le build stage
-COPY --from=build /app/node_modules ./node_modules
+# Modules compilés depuis le stage backend
+COPY --from=backend-build /app/node_modules ./node_modules
 
-# Copier le code source
+# Build React (dist/) depuis le stage frontend
+COPY --from=frontend-build /app/dist ./dist
+
+# Code source backend
 COPY package.json ./
 COPY index.js ./
-COPY index.html viewer.html positioner.html ./
-COPY styles.css ./
+
+# Pages standalone non-migrées (viewer OBS, positioner, styles)
+COPY viewer.html positioner.html styles.css ./
 
 # Répertoire de données persistantes
 RUN mkdir -p /app/data/images /app/data/meta

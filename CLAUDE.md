@@ -11,15 +11,42 @@ Discord PNGTuber bot with a local web UI and OBS viewer. The bot joins a voice c
 ## Commands
 
 ```bash
+# Développement
+npm run dev:api                    # Démarrer le backend (node index.js)
+npm run dev:ui                     # Démarrer Vite dev server (port 5173)
+cd client && npm install           # Installer les dépendances frontend
+
+# Build production
+npm run build:ui                   # Build React → dist/
 npm start                          # Run the bot locally (node index.js)
-docker compose build               # Build Docker image
+
+# Docker
+docker compose build               # Build Docker image (inclut npm run build)
 docker compose up -d               # Start in background
 docker compose down                # Stop
 docker compose logs -f             # Follow logs
-node --check index.js              # Syntax check (no test suite exists)
+node --check index.js              # Syntax check backend
 ```
 
 There are no lint or test scripts configured. Validation is manual (`node --check`).
+
+## Frontend — React (Vite)
+
+The control panel (`index.html` legacy) is being migrated to a React app in `client/`.
+
+**Structure `client/src/` :**
+- `api.js` — fetch centralisé (`apiFetch`, `apiJson`, `apiPost`, `apiDelete`)
+- `context/AppContext.jsx` — état global (auth, audioConfig, configData, levels)
+- `hooks/` — `usePollLevels`, `useWebSocket`, `useToast`, `useNotifications`, `useAudioStates`
+- `components/layout/` — `Header`, `VoiceSidebar`, `TabBar`
+- `components/ui/` — `Toast`, `Modal`, `NotificationBell`
+- `components/tabs/` — un fichier par onglet (`AvatarsTab`, `AudioTab`, `SessionsTab`…)
+- `components/avatars/` — `UserCard`, `UserSettingsModal`
+
+**En développement :** Vite (port 5173) proxie les requêtes API vers le backend (port 3350).
+**En production :** `npm run build:ui` génère `dist/`. Le backend Node sert `dist/index.html` pour `/` et les assets Vite depuis `dist/assets/`.
+
+`viewer.html` et `positioner.html` restent des fichiers HTML standalone (non migrés — usage OBS).
 
 ## Architecture
 

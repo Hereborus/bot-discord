@@ -3485,6 +3485,12 @@ route('GET', '/invite/:invitationId', handleInvitePage);
 // ════════════════════════════════════════════════════════════════
 // HTTP SERVER
 // ════════════════════════════════════════════════════════════════
+// REACT BUILD : si dist/index.html existe, l'app React est buildée.
+// On la sert en priorité pour / et les assets Vite (/assets/*).
+// viewer.html, positioner.html, styles.css restent dans SOURCE_ROOT.
+const DIST_ROOT  = path.join(SOURCE_ROOT, 'dist');
+const REACT_BUILT = fs.existsSync(path.join(DIST_ROOT, 'index.html'));
+
 const AUTH_PAGES = ['/index.html', '/positioner.html', '/']; // pages nécessitant auth (admin ou client)
 const CLIENT_PAGES = ['/client.html']; // redirige vers / (unifié)
 
@@ -3527,11 +3533,24 @@ httpServer = http.createServer(async (req, res) => {
         res.end();
         return;
     }
-    const fp = path.resolve(path.join(STATIC_ROOT, pathname));
-    if (!fp.startsWith(path.resolve(STATIC_ROOT))) {
-        res.writeHead(403); res.end(); return;
+    // ── Résolution du fichier statique ──────────────────────────
+    // Priorité : 1. dist/ (React build) pour /, /index.html, /assets/*
+    //            2. SOURCE_ROOT pour viewer.html, positioner.html, styles.css
+    let fp;
+    if (REACT_BUILT && (pathname === '/index.html' || pathname === '/')) {
+        fp = path.join(DIST_ROOT, 'index.html');
+    } else if (REACT_BUILT && pathname.startsWith('/assets/')) {
+        fp = path.resolve(path.join(DIST_ROOT, pathname));
+        if (!fp.startsWith(path.resolve(DIST_ROOT))) { res.writeHead(403); res.end(); return; }
+    } else {
+        fp = path.resolve(path.join(STATIC_ROOT, pathname));
+        if (!fp.startsWith(path.resolve(STATIC_ROOT))) { res.writeHead(403); res.end(); return; }
     }
     if (serveFile(res, fp, req)) return;
+    // Fallback SPA : toute route inconnue → dist/index.html (React Router)
+    if (REACT_BUILT && !pathname.includes('.')) {
+        if (serveFile(res, path.join(DIST_ROOT, 'index.html'), req)) return;
+    }
     res.writeHead(404);
     res.end("Not found");
 }).listen(PORT, () => {
