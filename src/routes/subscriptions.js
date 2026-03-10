@@ -1,4 +1,19 @@
-// ── Routes abonnements ────────────────────────────────────────────
+/**
+ * Routes abonnements — gestion des tiers et des sièges streamer
+ * =============================================================
+ * Endpoints pour le système d'abonnements :
+ *   - GET    /api/subscription               : mon abonnement + tier résolu
+ *   - POST   /api/subscription               : attribuer un abonnement (admin)
+ *   - DELETE /api/subscription/:discordId    : annuler un abonnement (admin)
+ *   - GET    /api/subscription/seats         : lister les sièges de mon pack streamer
+ *   - POST   /api/subscription/seats         : ajouter un siège
+ *   - DELETE /api/subscription/seats/:discordId : retirer un siège
+ *
+ * Le tier retourné par GET /api/subscription est résolu dynamiquement
+ * (abonnement direct > seat streamer > free) via getUserTier().
+ *
+ * Dépendances : http/helpers, db/repos/subscriptions, services/tierService
+ */
 import { json, parseJsonBody } from '../http/helpers.js';
 import { subscriptions as subRepo, seats as seatsRepo } from '../db/repos/subscriptions.js';
 import { getUserTier, TIER_LIMITS } from '../services/tierService.js';
@@ -7,6 +22,7 @@ import { getUserTier, TIER_LIMITS } from '../services/tierService.js';
 export async function handleGetSubscription(req, res, ctx) {
     const sub  = subRepo.get.get(ctx.session.discordId);
     const tier = getUserTier(ctx.session.discordId);
+    // Retourner les limites du tier pour que le frontend puisse les afficher directement
     json(res, { subscription: sub || null, tier, tierLimits: TIER_LIMITS[tier] }, 200, req);
 }
 
@@ -37,6 +53,7 @@ export async function handleAddSeat(req, res, ctx) {
     if (!discordId) return json(res, { error: 'discordId requis' }, 400, req);
     const sub = subRepo.get.get(ctx.session.discordId);
     if (!sub) return json(res, { error: 'Aucun abonnement actif' }, 400, req);
+    // Vérifier le plafond de sièges avant d'insérer
     const count = seatsRepo.count.get(sub.id)?.cnt || 0;
     if (count >= sub.max_seats) return json(res, { error: 'Nombre de sièges maximum atteint' }, 400, req);
     seatsRepo.add.run(sub.id, discordId);

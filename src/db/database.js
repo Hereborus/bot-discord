@@ -1,23 +1,34 @@
-// ── Initialisation SQLite ────────────────────────────────────────
-// Ce module exporte une instance db unique (singleton de module ES).
-// Tous les repositories importent cette instance — une seule connexion
-// est partagée, ce qui est correct pour SQLite mono-processus.
+/**
+ * Database — initialisation SQLite et schéma
+ * ============================================
+ * Exporte une instance `db` unique (singleton de module ES). Tous les
+ * repositories importent cette même instance — une seule connexion est
+ * partagée, ce qui est correct pour SQLite en mono-processus.
+ *
+ * Le schéma est déclaré ici avec CREATE TABLE IF NOT EXISTS : idempotent
+ * au démarrage, pas de système de migrations versionné.
+ *
+ * Dépendances : better-sqlite3, node:path, node:fs
+ */
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
 
 const DATA_ROOT = process.env.DATA_ROOT || process.cwd();
+// Créer le répertoire si nécessaire (premier lancement Docker)
 if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
 
 const DB_PATH = path.join(DATA_ROOT, 'pngtuber.db');
 export const db = new Database(DB_PATH);
 
-// WAL : lectures non bloquées par les écritures
+// WAL : lectures non bloquées par les écritures — important pour le polling fréquent de /levels
 db.pragma('journal_mode = WAL');
 // Appliquer les ON DELETE CASCADE définis dans le schéma
 db.pragma('foreign_keys = ON');
 
 // ── Schéma ───────────────────────────────────────────────────────
+// Toutes les tables sont créées en une seule transaction implicite.
+// Les index sont définis ici pour couvrir les requêtes fréquentes (byToken, byUser...).
 db.exec(`
     CREATE TABLE IF NOT EXISTS users (
         token        TEXT PRIMARY KEY,
