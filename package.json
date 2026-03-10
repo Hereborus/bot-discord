@@ -6,6 +6,9 @@
     "type": "module",
     "scripts": {
         "start": "node index.js",
+        "dev:api": "node index.js",
+        "dev:ui": "cd client && npm run dev",
+        "build:ui": "cd client && npm run build",
         "docker:build": "docker compose build",
         "docker:up": "docker compose up -d",
         "docker:down": "docker compose down",
