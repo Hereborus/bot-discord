@@ -64,8 +64,29 @@ import dotenv from "dotenv";
 import fftPkg from "fft-js";
 import { exec, spawn } from "child_process";
 import { WebSocketServer } from "ws";
-import Database from "better-sqlite3";
 import sharp from "sharp";
+
+// ── Imports depuis src/ ──────────────────────────────────────────
+import { rateLimit } from './src/services/rateLimiter.js';
+import { tokenFor, uidFor } from './src/services/tokenService.js';
+import { TIER_LIMITS, getUserTier, loadTier, requirePremium } from './src/services/tierService.js';
+import {
+    sessions, oauthStates, AUTH_ENABLED,
+    parseCookies, getSession, createSession, setSessionCookie, getUserRole,
+    resolveAuth,
+} from './src/services/authService.js';
+import { userLevels, userFreqHistory, userBaseline, recordingSessions, AUDIO } from './src/services/audioService.js';
+import { saveVoiceState, loadVoiceState, getAutoReconnect, setAutoReconnect } from './src/services/voiceService.js';
+import { db } from './src/db/database.js';
+import { users as usersRepo, frames as framesRepo } from './src/db/repos/users.js';
+import { permissions as permissionsRepo, avatarPerms as avatarPermsRepo } from './src/db/repos/permissions.js';
+import { subscriptions as subscriptionsRepo, seats as seatsRepo } from './src/db/repos/subscriptions.js';
+import { psessions, participants, invitations as invitationsRepo } from './src/db/repos/sessions.js';
+import { appTokens as appTokensRepo, notifications as notificationsRepo } from './src/db/repos/appTokens.js';
+import { BASE_URL, getAllowedOrigins, corsHeaders, securityHeaders } from './src/http/cors.js';
+import { json, serveFile, readBody, parseJsonBody, escapeHtml, MAX_BODY_SIZE } from './src/http/helpers.js';
+import { route, matchRoute } from './src/http/router.js';
+import { requireAuth, requireAdmin, requireClientOrAdmin } from './src/http/middleware.js';
 
 const { fft, util: fftUtil } = fftPkg;
 const SOURCE_ROOT = process.cwd();
@@ -132,39 +153,7 @@ function getClientIp(req) {
     return req.socket?.remoteAddress || 'unknown';
 }
 
-// ── Rate limiter simple en mémoire ──────────────────────────────
-// POURQUOI UN RATE LIMITER ?
-// Sans limite, un attaquant peut bombarder une route (ex: /auth/login) avec
-// des milliers de requêtes par seconde : brute-force de mots de passe,
-// scraping, déni de service applicatif.
-//
-// ALGORITHME : "fixed window" (fenêtre fixe)
-// Pour chaque clé (ex: "auth:1.2.3.4"), on maintient un compteur et une
-// date de réinitialisation. Si le compteur dépasse maxRequests avant la fin
-// de la fenêtre, on rejette la requête (retourne true = rate limited).
-// Avantage : très simple, O(1). Inconvénient mineur : pointe possible en
-// bordure de fenêtre (voir "sliding window" pour une version plus robuste).
-//
-// La clé combine la route ET l'IP pour que le rate limit soit par-IP,
-// pas global (ex: "upload:192.168.1.1" vs "auth:192.168.1.1").
-const rateLimitBuckets = new Map(); // key → { count, resetAt }
-function rateLimit(key, maxRequests, windowMs) {
-    const now = Date.now();
-    let bucket = rateLimitBuckets.get(key);
-    if (!bucket || now > bucket.resetAt) {
-        bucket = { count: 0, resetAt: now + windowMs };
-        rateLimitBuckets.set(key, bucket);
-    }
-    bucket.count++;
-    return bucket.count > maxRequests;
-}
-// Nettoyage périodique des buckets expirés (toutes les 60s)
-setInterval(() => {
-    const now = Date.now();
-    for (const [key, bucket] of rateLimitBuckets) {
-        if (now > bucket.resetAt) rateLimitBuckets.delete(key);
-    }
-}, 60_000);
+// rateLimit() importé depuis src/services/rateLimiter.js
 const IMAGES_DIR = path.join(DATA_ROOT, "images");
 const META_DIR = path.join(DATA_ROOT, "meta");
 const ENV_PATH = path.join(DATA_ROOT, ".env");
@@ -173,293 +162,87 @@ if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
 if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
 if (!fs.existsSync(META_DIR)) fs.mkdirSync(META_DIR, { recursive: true });
 
-// ── Auto-reconnect state file ──
-const VOICE_STATE_PATH = path.join(DATA_ROOT, "voice-state.json");
-
-function saveVoiceState() {
-    const state = {
-        autoReconnect: getAutoReconnect(),
-        guildId: connectedGuildId,
-        channelId: connectedChannelId,
-    };
-    try { fs.writeFileSync(VOICE_STATE_PATH, JSON.stringify(state)); } catch {}
-}
-
-function loadVoiceState() {
-    try {
-        if (fs.existsSync(VOICE_STATE_PATH)) return JSON.parse(fs.readFileSync(VOICE_STATE_PATH, "utf-8"));
-    } catch {}
-    return { autoReconnect: false, guildId: null, channelId: null };
-}
-
-function getAutoReconnect() {
-    return loadVoiceState().autoReconnect ?? false;
-}
-
-function setAutoReconnect(val) {
-    const state = loadVoiceState();
-    state.autoReconnect = !!val;
-    try { fs.writeFileSync(VOICE_STATE_PATH, JSON.stringify(state)); } catch {}
-}
+// saveVoiceState, loadVoiceState, getAutoReconnect, setAutoReconnect importés depuis src/services/voiceService.js
 
 // ── Mode suivi (follow) — le bot suit un utilisateur entre les canaux vocaux ──
 let followTarget = null; // { discordId, requestedBy, displayName }
 let followError = null; // { channelName, userName, ts } — erreur de suivi récente
 
-// ════════════════════════════════════════════════════════════════
-// SQLITE DATABASE — remplace les fichiers JSON meta/config/permissions
-// ════════════════════════════════════════════════════════════════
-// POURQUOI SQLITE ?
-// Légèreté : pas de serveur séparé, la base est un simple fichier sur disque.
-// Idéal pour un bot mono-instance où on n'a pas besoin de PostgreSQL.
-//
-// PRAGMA journal_mode = WAL (Write-Ahead Logging)
-// Mode d'écriture par défaut : les écritures bloquent les lectures (journal DELETE).
-// Avec WAL, les écritures se font dans un fichier journal séparé et les
-// lectures peuvent continuer en parallèle. Résultat : bien meilleure
-// concurrence pour un serveur HTTP avec plusieurs requêtes simultanées.
-//
-// PRAGMA foreign_keys = ON
-// SQLite n'applique pas les clés étrangères (ON DELETE CASCADE etc.) par
-// défaut, pour des raisons de compatibilité. Il faut l'activer explicitement.
-const DB_PATH = path.join(DATA_ROOT, "pngtuber.db");
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
-
-db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-        token        TEXT PRIMARY KEY,
-        display_name TEXT DEFAULT '???',
-        config_json  TEXT DEFAULT '{}',
-        created_at   TEXT DEFAULT (datetime('now')),
-        updated_at   TEXT DEFAULT (datetime('now'))
-    );
-    CREATE TABLE IF NOT EXISTS frames (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        token        TEXT NOT NULL,
-        state_key    TEXT NOT NULL,
-        filename     TEXT NOT NULL,
-        sort_order   INTEGER NOT NULL DEFAULT 0,
-        original_ext TEXT,
-        file_size    INTEGER DEFAULT 0,
-        created_at   TEXT DEFAULT (datetime('now')),
-        UNIQUE(token, state_key, filename)
-    );
-    CREATE INDEX IF NOT EXISTS idx_frames_token_state ON frames(token, state_key);
-    CREATE TABLE IF NOT EXISTS permissions (
-        discord_id   TEXT PRIMARY KEY,
-        role         TEXT NOT NULL DEFAULT 'viewer',
-        granted_by   TEXT,
-        granted_at   TEXT DEFAULT (datetime('now')),
-        display_name TEXT DEFAULT 'Unknown',
-        guilds_json  TEXT DEFAULT '[]'
-    );
-    CREATE TABLE IF NOT EXISTS avatar_permissions (
-        token        TEXT NOT NULL,
-        guild_id     TEXT NOT NULL,
-        allowed      INTEGER NOT NULL DEFAULT 0,
-        updated_at   TEXT DEFAULT (datetime('now')),
-        PRIMARY KEY(token, guild_id)
-    );
-
-    -- ── Premium / Abonnements ──
-    CREATE TABLE IF NOT EXISTS subscriptions (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        discord_id      TEXT NOT NULL UNIQUE,
-        tier            TEXT NOT NULL DEFAULT 'free',
-        status          TEXT NOT NULL DEFAULT 'active',
-        max_seats       INTEGER NOT NULL DEFAULT 1,
-        stripe_sub_id   TEXT,
-        started_at      TEXT DEFAULT (datetime('now')),
-        expires_at      TEXT,
-        created_at      TEXT DEFAULT (datetime('now')),
-        updated_at      TEXT DEFAULT (datetime('now'))
-    );
-    CREATE TABLE IF NOT EXISTS subscription_seats (
-        subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
-        discord_id      TEXT NOT NULL,
-        added_at        TEXT DEFAULT (datetime('now')),
-        UNIQUE(subscription_id, discord_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_seats_sub ON subscription_seats(subscription_id);
-    CREATE INDEX IF NOT EXISTS idx_seats_user ON subscription_seats(discord_id);
-
-    -- ── Sessions PNGTuber (collaboratives) ──
-    CREATE TABLE IF NOT EXISTS pngtuber_sessions (
-        id                TEXT PRIMARY KEY,
-        owner_discord_id  TEXT NOT NULL,
-        name              TEXT DEFAULT 'Session',
-        type              TEXT NOT NULL DEFAULT 'voice',
-        guild_id          TEXT,
-        channel_id        TEXT,
-        status            TEXT NOT NULL DEFAULT 'active',
-        max_participants  INTEGER DEFAULT 10,
-        created_at        TEXT DEFAULT (datetime('now')),
-        ended_at          TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_psessions_owner ON pngtuber_sessions(owner_discord_id);
-    CREATE INDEX IF NOT EXISTS idx_psessions_guild ON pngtuber_sessions(guild_id, channel_id);
-    CREATE TABLE IF NOT EXISTS session_participants (
-        session_id  TEXT NOT NULL REFERENCES pngtuber_sessions(id) ON DELETE CASCADE,
-        discord_id  TEXT NOT NULL,
-        token       TEXT NOT NULL,
-        role        TEXT NOT NULL DEFAULT 'participant',
-        joined_at   TEXT DEFAULT (datetime('now')),
-        left_at     TEXT,
-        PRIMARY KEY(session_id, discord_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_sparticipants_user ON session_participants(discord_id);
-
-    -- ── Invitations ──
-    CREATE TABLE IF NOT EXISTS invitations (
-        id                  TEXT PRIMARY KEY,
-        session_id          TEXT NOT NULL REFERENCES pngtuber_sessions(id) ON DELETE CASCADE,
-        invited_by          TEXT NOT NULL,
-        invited_discord_id  TEXT,
-        status              TEXT NOT NULL DEFAULT 'pending',
-        max_uses            INTEGER DEFAULT 1,
-        use_count           INTEGER DEFAULT 0,
-        stream_name         TEXT,
-        expires_at          TEXT,
-        created_at          TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_invitations_session ON invitations(session_id);
-    CREATE INDEX IF NOT EXISTS idx_invitations_invited ON invitations(invited_discord_id);
-
-    -- ── App Tokens (Device Auth) ──
-    CREATE TABLE IF NOT EXISTS app_tokens (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        token_hash   TEXT NOT NULL UNIQUE,
-        discord_id   TEXT NOT NULL,
-        device_name  TEXT DEFAULT 'Agent',
-        last_used_at TEXT,
-        revoked_at   TEXT,
-        created_at   TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_app_tokens_discord ON app_tokens(discord_id);
-
-    -- ── Notifications ──
-    CREATE TABLE IF NOT EXISTS notifications (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        discord_id   TEXT NOT NULL,
-        type         TEXT NOT NULL,
-        payload_json TEXT NOT NULL DEFAULT '{}',
-        read         INTEGER NOT NULL DEFAULT 0,
-        created_at   TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(discord_id, read);
-`);
-
-// ── Prepared statements — pourquoi les utiliser ? ───────────────
-// INJECTION SQL : sans précautions, assembler une requête avec des données
-// utilisateur crée une faille critique. Ex: token = "'; DROP TABLE users;--"
-// → la requête devient "SELECT * FROM users WHERE token = ''; DROP TABLE users;--"
-//
-// Les "prepared statements" (requêtes préparées) séparent le code SQL des
-// données : le moteur compile la requête une seule fois, puis remplace les "?"
-// par les valeurs passées en paramètre SANS les interpréter comme du SQL.
-// Avantage double : sécurité (injection impossible) + performance (compilation cachée).
+// ── Aliases stmts → repos src/ ──────────────────────────────────
+// db, repos et schema sont initialisés par src/db/database.js et ses repos.
+// On crée des aliases compatibles avec le code existant de index.js.
 const stmts = {
-    getUser:          db.prepare("SELECT * FROM users WHERE token = ?"),
-    upsertUser:       db.prepare(`INSERT INTO users (token, display_name, config_json, updated_at)
-                                  VALUES (?, ?, ?, datetime('now'))
-                                  ON CONFLICT(token) DO UPDATE SET
-                                      display_name = excluded.display_name,
-                                      config_json  = excluded.config_json,
-                                      updated_at   = datetime('now')`),
-    getUserConfig:    db.prepare("SELECT config_json FROM users WHERE token = ?"),
-    setUserConfig:    db.prepare("UPDATE users SET config_json = ?, updated_at = datetime('now') WHERE token = ?"),
-    getFrames:        db.prepare("SELECT filename, state_key, sort_order FROM frames WHERE token = ? ORDER BY state_key, sort_order"),
-    getFramesByState: db.prepare("SELECT filename FROM frames WHERE token = ? AND state_key = ? ORDER BY sort_order"),
-    insertFrame:      db.prepare("INSERT OR IGNORE INTO frames (token, state_key, filename, sort_order, original_ext, file_size) VALUES (?, ?, ?, ?, ?, ?)"),
-    deleteFrame:      db.prepare("DELETE FROM frames WHERE token = ? AND state_key = ? AND filename = ?"),
-    deleteUserFrames: db.prepare("DELETE FROM frames WHERE token = ?"),
-    deleteUser:       db.prepare("DELETE FROM users WHERE token = ?"),
-    updateFrameOrder: db.prepare("UPDATE frames SET sort_order = ? WHERE token = ? AND state_key = ? AND filename = ?"),
-    maxSortOrder:     db.prepare("SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM frames WHERE token = ? AND state_key = ?"),
-    allUsers:         db.prepare("SELECT token, display_name, config_json FROM users"),
-    moveFrame:        db.prepare("UPDATE frames SET state_key = ? WHERE token = ? AND state_key = ? AND filename = ?"),
+    getUser:             usersRepo.get,
+    upsertUser:          usersRepo.upsert,
+    getUserConfig:       usersRepo.getConfig,
+    setUserConfig:       usersRepo.setConfig,
+    getFrames:           framesRepo.byToken,
+    getFramesByState:    framesRepo.byState,
+    insertFrame:         framesRepo.insert,
+    deleteFrame:         framesRepo.delete,
+    deleteUserFrames:    framesRepo.deleteAll,
+    deleteUser:          db.prepare("DELETE FROM users WHERE token = ?"),
+    updateFrameOrder:    framesRepo.updateOrder,
+    maxSortOrder:        framesRepo.maxOrder,
+    allUsers:            usersRepo.all,
+    moveFrame:           framesRepo.move,
     // DB browser
-    dbStats:          db.prepare("SELECT (SELECT COUNT(*) FROM users) AS user_count, (SELECT COUNT(*) FROM frames) AS frame_count, (SELECT COALESCE(SUM(file_size),0) FROM frames) AS total_size"),
-    dbAllFrames:      db.prepare("SELECT f.token, f.state_key, f.filename, f.original_ext, f.file_size, f.created_at, u.display_name FROM frames f LEFT JOIN users u ON f.token = u.token ORDER BY f.token, f.state_key, f.sort_order"),
+    dbStats:             framesRepo.stats,
+    dbAllFrames:         framesRepo.allForAdmin,
     // Permissions
-    getPermission:    db.prepare("SELECT * FROM permissions WHERE discord_id = ?"),
-    upsertPermission: db.prepare(`INSERT INTO permissions (discord_id, role, granted_by, display_name, guilds_json)
-                                  VALUES (?, ?, ?, ?, ?)
-                                  ON CONFLICT(discord_id) DO UPDATE SET
-                                      role = excluded.role, granted_by = excluded.granted_by,
-                                      display_name = excluded.display_name, guilds_json = excluded.guilds_json,
-                                      granted_at = datetime('now')`),
-    deletePermission: db.prepare("DELETE FROM permissions WHERE discord_id = ?"),
-    allPermissions:   db.prepare("SELECT * FROM permissions"),
+    getPermission:       permissionsRepo.get,
+    upsertPermission:    permissionsRepo.upsert,
+    deletePermission:    permissionsRepo.delete,
+    allPermissions:      permissionsRepo.all,
     // Avatar permissions per server
-    getAvatarPerms:      db.prepare("SELECT guild_id, allowed FROM avatar_permissions WHERE token = ?"),
-    getAvatarPerm:       db.prepare("SELECT allowed FROM avatar_permissions WHERE token = ? AND guild_id = ?"),
-    upsertAvatarPerm:    db.prepare(`INSERT INTO avatar_permissions (token, guild_id, allowed, updated_at)
-                                     VALUES (?, ?, ?, datetime('now'))
-                                     ON CONFLICT(token, guild_id) DO UPDATE SET
-                                         allowed = excluded.allowed, updated_at = datetime('now')`),
+    getAvatarPerms:      avatarPermsRepo.byToken,
+    getAvatarPerm:       avatarPermsRepo.get,
+    upsertAvatarPerm:    avatarPermsRepo.upsert,
     // ── Subscriptions ──
-    getSubscription:     db.prepare("SELECT * FROM subscriptions WHERE discord_id = ? AND status = 'active'"),
-    getSubscriptionById: db.prepare("SELECT * FROM subscriptions WHERE id = ?"),
-    upsertSubscription:  db.prepare(`INSERT INTO subscriptions (discord_id, tier, status, max_seats, expires_at, updated_at)
-                                     VALUES (?, ?, 'active', ?, ?, datetime('now'))
-                                     ON CONFLICT(discord_id) DO UPDATE SET
-                                         tier = excluded.tier, status = 'active',
-                                         max_seats = excluded.max_seats, expires_at = excluded.expires_at,
-                                         updated_at = datetime('now')`),
-    cancelSubscription:  db.prepare("UPDATE subscriptions SET status = 'cancelled', updated_at = datetime('now') WHERE discord_id = ?"),
-    expireSubscriptions: db.prepare("UPDATE subscriptions SET status = 'expired', updated_at = datetime('now') WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < datetime('now')"),
+    getSubscription:     subscriptionsRepo.get,
+    getSubscriptionById: subscriptionsRepo.getById,
+    upsertSubscription:  subscriptionsRepo.upsert,
+    cancelSubscription:  subscriptionsRepo.cancel,
+    expireSubscriptions: subscriptionsRepo.expire,
     // ── Seats ──
-    getSeatByUser:       db.prepare(`SELECT ss.*, s.discord_id AS owner_discord_id, s.tier, s.status AS sub_status
-                                     FROM subscription_seats ss JOIN subscriptions s ON ss.subscription_id = s.id
-                                     WHERE ss.discord_id = ? AND s.status = 'active'`),
-    getSeatsBySub:       db.prepare("SELECT * FROM subscription_seats WHERE subscription_id = ?"),
-    countSeatsBySub:     db.prepare("SELECT COUNT(*) AS cnt FROM subscription_seats WHERE subscription_id = ?"),
-    addSeat:             db.prepare("INSERT OR IGNORE INTO subscription_seats (subscription_id, discord_id) VALUES (?, ?)"),
-    removeSeat:          db.prepare("DELETE FROM subscription_seats WHERE subscription_id = ? AND discord_id = ?"),
+    getSeatByUser:       seatsRepo.byUser,
+    getSeatsBySub:       seatsRepo.bySub,
+    countSeatsBySub:     seatsRepo.count,
+    addSeat:             seatsRepo.add,
+    removeSeat:          seatsRepo.remove,
     // ── Sessions PNGTuber ──
-    createPSession:      db.prepare("INSERT INTO pngtuber_sessions (id, owner_discord_id, name, type, guild_id, channel_id, status, max_participants) VALUES (?, ?, ?, ?, ?, ?, 'active', ?)"),
-    getPSession:         db.prepare("SELECT * FROM pngtuber_sessions WHERE id = ?"),
-    endPSession:         db.prepare("UPDATE pngtuber_sessions SET status = 'ended', ended_at = datetime('now') WHERE id = ?"),
-    getActiveVoiceSession: db.prepare("SELECT * FROM pngtuber_sessions WHERE guild_id = ? AND channel_id = ? AND status = 'active' LIMIT 1"),
-    getUserPSessions:    db.prepare(`SELECT DISTINCT s.* FROM pngtuber_sessions s
-                                     LEFT JOIN session_participants sp ON s.id = sp.session_id
-                                     WHERE (s.owner_discord_id = ? OR (sp.discord_id = ? AND sp.left_at IS NULL))
-                                     AND s.status = 'active' ORDER BY s.created_at DESC`),
+    createPSession:      psessions.create,
+    getPSession:         psessions.get,
+    endPSession:         psessions.end,
+    getActiveVoiceSession: psessions.activeVoice,
+    getUserPSessions:    psessions.byUser,
     // ── Participants ──
-    addParticipant:      db.prepare("INSERT OR IGNORE INTO session_participants (session_id, discord_id, token, role) VALUES (?, ?, ?, ?)"),
-    removeParticipant:   db.prepare("UPDATE session_participants SET left_at = datetime('now') WHERE session_id = ? AND discord_id = ? AND left_at IS NULL"),
-    getParticipants:     db.prepare("SELECT * FROM session_participants WHERE session_id = ? AND left_at IS NULL"),
-    isParticipant:       db.prepare("SELECT 1 FROM session_participants WHERE session_id = ? AND discord_id = ? AND left_at IS NULL"),
+    addParticipant:      participants.add,
+    removeParticipant:   participants.remove,
+    getParticipants:     participants.list,
+    isParticipant:       participants.check,
     // ── Invitations ──
-    createInvitation:    db.prepare("INSERT INTO invitations (id, session_id, invited_by, invited_discord_id, max_uses, stream_name, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
-    getInvitation:       db.prepare("SELECT i.*, s.name AS session_name, s.owner_discord_id FROM invitations i JOIN pngtuber_sessions s ON i.session_id = s.id WHERE i.id = ?"),
-    updateInvitationStatus: db.prepare("UPDATE invitations SET status = ? WHERE id = ?"),
-    incrementInviteUse:  db.prepare("UPDATE invitations SET use_count = use_count + 1 WHERE id = ?"),
-    getPendingInvitations: db.prepare(`SELECT i.*, s.name AS session_name FROM invitations i
-                                       JOIN pngtuber_sessions s ON i.session_id = s.id
-                                       WHERE i.invited_discord_id = ? AND i.status = 'pending'
-                                       ORDER BY i.created_at DESC`),
-    getSessionInvitations: db.prepare("SELECT * FROM invitations WHERE session_id = ? ORDER BY created_at DESC"),
+    createInvitation:    invitationsRepo.create,
+    getInvitation:       invitationsRepo.get,
+    updateInvitationStatus: invitationsRepo.updateStatus,
+    incrementInviteUse:  invitationsRepo.incrementUse,
+    getPendingInvitations: invitationsRepo.pending,
+    getSessionInvitations: invitationsRepo.bySession,
     // ── App Tokens ──
-    createAppToken:      db.prepare("INSERT INTO app_tokens (token_hash, discord_id, device_name) VALUES (?, ?, ?)"),
-    getAppToken:         db.prepare("SELECT * FROM app_tokens WHERE token_hash = ? AND revoked_at IS NULL"),
-    getAppTokensByUser:  db.prepare("SELECT id, device_name, last_used_at, created_at FROM app_tokens WHERE discord_id = ? AND revoked_at IS NULL"),
-    revokeAppToken:      db.prepare("UPDATE app_tokens SET revoked_at = datetime('now') WHERE id = ? AND discord_id = ?"),
-    touchAppToken:       db.prepare("UPDATE app_tokens SET last_used_at = datetime('now') WHERE token_hash = ?"),
-    deleteAppTokensByUser: db.prepare("UPDATE app_tokens SET revoked_at = datetime('now') WHERE discord_id = ?"),
+    createAppToken:      appTokensRepo.create,
+    getAppToken:         appTokensRepo.get,
+    getAppTokensByUser:  appTokensRepo.byUser,
+    revokeAppToken:      appTokensRepo.revoke,
+    touchAppToken:       appTokensRepo.touch,
+    deleteAppTokensByUser: appTokensRepo.revokeAll,
     // ── Notifications ──
-    createNotification:  db.prepare("INSERT INTO notifications (discord_id, type, payload_json) VALUES (?, ?, ?)"),
-    getNotifications:    db.prepare("SELECT * FROM notifications WHERE discord_id = ? ORDER BY created_at DESC LIMIT ?"),
-    getUnreadNotifications: db.prepare("SELECT * FROM notifications WHERE discord_id = ? AND read = 0 ORDER BY created_at DESC LIMIT ?"),
-    countUnreadNotifs:   db.prepare("SELECT COUNT(*) AS cnt FROM notifications WHERE discord_id = ? AND read = 0"),
-    markNotifRead:       db.prepare("UPDATE notifications SET read = 1 WHERE id = ? AND discord_id = ?"),
-    markAllNotifsRead:   db.prepare("UPDATE notifications SET read = 1 WHERE discord_id = ? AND read = 0"),
+    createNotification:  notificationsRepo.create,
+    getNotifications:    notificationsRepo.list,
+    getUnreadNotifications: notificationsRepo.unread,
+    countUnreadNotifs:   notificationsRepo.countUnread,
+    markNotifRead:       notificationsRepo.markRead,
+    markAllNotifsRead:   notificationsRepo.markAllRead,
 };
-
-console.log("✓ SQLite initialisé:", DB_PATH);
 
 // ════════════════════════════════════════════════════════════════
 // .ENV — généré automatiquement au premier lancement si absent
@@ -508,87 +291,25 @@ ensureEnvKey("SESSION_SECRET", crypto.randomBytes(32).toString("hex"));
 
 dotenv.config({ path: ENV_PATH });
 
-// ════════════════════════════════════════════════════════════════
-// SYSTÈME DE TOKEN — userId Discord → token opaque 16 hex
-// HMAC-SHA256(userId, SECRET) — non-réversible sans la clé secrète
-// ════════════════════════════════════════════════════════════════
-// POURQUOI NE PAS EXPOSER LE userId DISCORD ?
-// Le userId Discord est une donnée personnelle stable et publique. L'exposer
-// dans les URLs ou l'API permettrait :
-//   - De corréler les avatars d'un utilisateur sur plusieurs services
-//   - De scraper facilement toute la base utilisateurs
-//   - D'attaques ciblées (spam, phishing) connaissant un userId
-//
-// SOLUTION : HMAC-SHA256
-// On calcule un "token" = les 16 premiers caractères hex de HMAC(userId, SECRET).
-// HMAC = Hash-based Message Authentication Code — c'est une fonction à sens unique.
-// Sans connaître SECRET (gardé uniquement côté serveur), il est impossible de
-// retrouver le userId à partir du token.
-// Le token est déterministe : même userId + même secret = même token.
-// Ainsi on peut recalculer le token à la demande sans le stocker.
-const HASH_SECRET = process.env.USER_HASH_SECRET;
-
-// hash stable du userId — utilisé pour nommer les fichiers sur disque
+// tokenFor, uidFor importés depuis src/services/tokenService.js
+// Compatibilité avec le code qui utilise tokenToUid/uidToToken directement
+// (accès interne aux Maps du tokenService — partagées via le module singleton)
+// Note: on accède aux maps via les fonctions exportées uniquement.
 function hashUid(userId) {
-    return crypto
-        .createHmac("sha256", HASH_SECRET)
-        .update(String(userId))
-        .digest("hex")
-        .slice(0, 16);
+    // Fallback interne — utilisé dans migrateExistingData et writeCfg
+    return tokenFor(userId);
 }
 
-// Maps en mémoire — le userId Discord ne sort jamais de ce processus
-const tokenToUid = new Map(); // token → userId
-const uidToToken = new Map(); // userId → token
-
-function tokenFor(userId) {
-    // On garde une table en mémoire pour éviter de recalculer le token partout.
-    // Le token est déterministe: même userId => même token (avec le même secret).
-    if (uidToToken.has(userId)) return uidToToken.get(userId);
-    const token = hashUid(userId);
-    tokenToUid.set(token, userId);
-    uidToToken.set(userId, token);
-    return token;
-}
-function uidFor(token) {
-    return tokenToUid.get(token) || null;
-}
 // Valide un token: en mémoire OU en base de données
 function isKnownToken(token) {
-    return tokenToUid.has(token) || !!stmts.getUser.get(token);
+    return !!uidFor(token) || !!stmts.getUser.get(token);
 }
 // Chemin dossier état par token (sans besoin du userId)
 function stateDirByToken(token, sk) {
     return path.join(IMAGES_DIR, token, sk);
 }
 
-// ════════════════════════════════════════════════════════════════
-// AUDIO CONFIG
-// ════════════════════════════════════════════════════════════════
-// Constantes du pipeline audio — modifiez avec précaution :
-//   sampleRate   : 48000 Hz — fréquence standard Discord/Opus (Nyquist: capte jusqu'à 24kHz)
-//   sampleInterval: 50 ms — fréquence d'analyse (20 fois/seconde). Plus bas = plus réactif
-//                  mais plus de CPU. 50ms est un bon compromis pour l'animation avatar.
-//   durationWindow: 100 ms — longueur de la fenêtre de lissage. Réduit le clignotement
-//                  sans trop retarder la détection de parole.
-//   fftSize      : 1024 points — résolution de la FFT. Résolution fréquentielle = 48000/1024
-//                  ≈ 46.9 Hz/bin. Plus grand = meilleure résolution mais plus de calcul.
-//   freqBands    : bandes fréquentielles pour la détection d'émotion :
-//                  low (20-500 Hz) = fondamentale vocale + basses
-//                  mid (500-2kHz)  = formants principaux, intelligibilité
-//                  high (2-10kHz)  = sifflantes, agressivité, brillance
-const AUDIO = {
-    sampleRate: 48000,
-    sampleInterval: 50,
-    durationWindow: 100,
-    fftSize: 1024,
-    freqBands: {
-        low: { min: 20, max: 500 },
-        mid: { min: 500, max: 2000 },
-        high: { min: 2000, max: 10000 },
-    },
-};
-const userLevels = new Map();
+// AUDIO, userLevels importés depuis src/services/audioService.js
 // Viewer sessions: sessionId → { userToken, createdAt } — persisté sur disque
 const VIEWER_SESSIONS_PATH = path.join(DATA_ROOT, "viewer-sessions.json");
 const viewerSessions = new Map();
@@ -623,163 +344,9 @@ let isShuttingDown = false;
 // ════════════════════════════════════════════════════════════════
 // UTILITAIRES HTTP
 // ════════════════════════════════════════════════════════════════
-const MIME = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "application/javascript",
-    ".css": "text/css",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".svg": "image/svg+xml",
-    ".ico": "image/x-icon",
-    ".json": "application/json",
-};
-
-// ── URL publique (reverse proxy ou local) ───────────────────────
-const BASE_URL = (() => {
-    if (process.env.BASE_URL) return process.env.BASE_URL.replace(/\/+$/, '');
-    if (process.env.DISCORD_REDIRECT_URI) {
-        try { return new URL(process.env.DISCORD_REDIRECT_URI).origin; } catch {}
-    }
-    return `http://localhost:${PORT}`;
-})();
-
-// ── CORS dynamique ──────────────────────────────────────────────
-// POURQUOI LE CORS (Cross-Origin Resource Sharing) ?
-// Les navigateurs appliquent la "same-origin policy" : une page sur
-// https://example.com ne peut pas faire de fetch vers https://other.com
-// par défaut (protection contre les attaques CSRF et vol de données).
-//
-// CORS est le mécanisme qui permet d'assouplir cette règle de façon contrôlée.
-// Le serveur annonce via des en-têtes quelles origines sont autorisées.
-//
-// PIÈGE avec les credentials (cookies, sessions) :
-// "Access-Control-Allow-Origin: *" est interdit si "Access-Control-Allow-Credentials: true".
-// Il faut spécifier l'origine exacte. C'est pourquoi on valide l'origin de la
-// requête contre une liste blanche (localhost, BASE_URL, CORS_ORIGINS) et on
-// retourne l'origin validée — pas un wildcard "*".
-function getAllowedOrigins() {
-    const origins = new Set([
-        `http://localhost:${PORT}`,
-        `http://127.0.0.1:${PORT}`,
-        BASE_URL,
-    ]);
-    if (process.env.CORS_ORIGINS) {
-        for (const o of process.env.CORS_ORIGINS.split(',')) origins.add(o.trim());
-    }
-    return [...origins];
-}
-
-function corsHeaders(req) {
-    const origin = req?.headers?.origin || '';
-    const allowed = getAllowedOrigins();
-    const headers = {
-        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Allow-Credentials": "true",
-    };
-    if (origin && allowed.includes(origin)) {
-        headers["Access-Control-Allow-Origin"] = origin;
-    } else if (!origin) {
-        // Pas d'origin → requête same-origin ou outil CLI, pas de credentials
-        headers["Access-Control-Allow-Origin"] = "*";
-        delete headers["Access-Control-Allow-Credentials"];
-    }
-    return headers;
-}
-
-// ── Headers de sécurité communs ──────────────────────────────────
-// Ces en-têtes HTTP instrucent le navigateur sur comment traiter les réponses.
-//
-// X-Content-Type-Options: nosniff
-//   Empêche le navigateur de "deviner" le type MIME d'un fichier.
-//   Sans cela, un PNG uploadé contenant du JS pourrait être exécuté par IE/Edge.
-//
-// X-XSS-Protection: 1; mode=block
-//   Active le filtre XSS intégré des anciens navigateurs (Chrome, IE).
-//   Obsolète sur les navigateurs modernes mais inoffensif.
-//
-// Referrer-Policy: strict-origin-when-cross-origin
-//   Contrôle quelles infos sont envoyées dans l'en-tête "Referer" lors des
-//   navigations. "strict-origin-when-cross-origin" envoie uniquement l'origine
-//   (pas le chemin complet) pour les requêtes cross-origin — évite de fuiter
-//   des paramètres d'URL sensibles vers des sites tiers.
-//
-// Strict-Transport-Security (HSTS)
-//   Force le navigateur à utiliser HTTPS pour toutes les futures requêtes vers
-//   ce domaine pendant 1 an. Protège contre le downgrade HTTP (man-in-the-middle).
-//   Activé uniquement si BASE_URL commence par https://.
-function securityHeaders(extra = {}) {
-    const isHttps = BASE_URL.startsWith('https://');
-    const h = {
-        "X-Content-Type-Options": "nosniff",
-        "X-XSS-Protection": "1; mode=block",
-        "Referrer-Policy": "strict-origin-when-cross-origin",
-        ...extra,
-    };
-    if (isHttps) h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
-    return h;
-}
-
-function serveFile(res, filePath, req = null) {
-    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile())
-        return false;
-    const ext = path.extname(filePath).toLowerCase();
-    const headers = {
-        "Content-Type": MIME[ext] || "application/octet-stream",
-        ...corsHeaders(req),
-        ...securityHeaders(),
-    };
-    // Pas de cache sur les fichiers HTML (toujours servir la dernière version)
-    if (ext === '.html' || ext === '.css') {
-        headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
-        headers["Pragma"] = "no-cache";
-    }
-    // SVG servis comme images statiques : empêcher exécution JS
-    if (ext === '.svg') {
-        headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'";
-        headers["Content-Disposition"] = "inline";
-    }
-    res.writeHead(200, headers);
-    fs.createReadStream(filePath).pipe(res);
-    return true;
-}
-function json(res, data, status = 200, req = null) {
-    res.writeHead(status, { "Content-Type": "application/json", ...corsHeaders(req), ...securityHeaders() });
-    res.end(JSON.stringify(data));
-}
-
-// ── Échapper HTML pour les messages d'erreur ─────────────────────
-function escapeHtml(str) {
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 Mo
-
-function readBody(req, maxSize = MAX_BODY_SIZE) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        let size = 0;
-        req.on("data", (chunk) => {
-            size += chunk.length;
-            if (size > maxSize) {
-                req.destroy();
-                reject(new Error("Corps de requête trop volumineux"));
-                return;
-            }
-            chunks.push(chunk);
-        });
-        req.on("end", () => resolve(Buffer.concat(chunks)));
-        req.on("error", reject);
-    });
-}
-
-async function parseJsonBody(req) {
-    const raw = await readBody(req);
-    return JSON.parse(raw.toString());
-}
+// BASE_URL, getAllowedOrigins, corsHeaders, securityHeaders importés depuis src/http/cors.js
+// json, serveFile, readBody, parseJsonBody, escapeHtml, MAX_BODY_SIZE importés depuis src/http/helpers.js
+// MIME importé indirectement (disponible via src/http/helpers.js)
 
 function openDefaultBrowser(url) {
     if (process.env.PNGTUBER_NO_BROWSER === "1") return;
@@ -837,10 +404,7 @@ function loadPermissions() {
     return { version: 1, users };
 }
 
-function getUserRole(discordId) {
-    const row = stmts.getPermission.get(discordId);
-    return row?.role || "viewer";
-}
+// getUserRole importé depuis src/services/authService.js
 
 function getFrames(userId) {
     const token = tokenFor(userId);
@@ -930,75 +494,7 @@ function validateUserConfig(cfg) {
     return true;
 }
 
-// ════════════════════════════════════════════════════════════════
-// TIERS PREMIUM — limites et vérification
-// ════════════════════════════════════════════════════════════════
-// Architecture de monétisation à 3 niveaux :
-//   free     → limites de frames/états, émotions désactivées
-//   premium  → toutes fonctionnalités débloquées
-//   streamer → comme premium, mais l'abonnement couvre N "seats" (places),
-//              permettant à un streamer de distribuer l'accès premium à ses viewers
-//
-// getUserTier() résout le tier effectif d'un utilisateur dans l'ordre :
-//   1. Abonnement direct actif (table subscriptions)
-//   2. Couverture via un seat streamer (table subscription_seats)
-//   3. Défaut : free
-//
-// Les middlewares loadTier + requirePremium s'enchaînent :
-//   loadTier    → injecte ctx.tier et ctx.tierLimits dans le contexte
-//   requirePremium → bloque la route si tier === 'free'
-const TIER_LIMITS = {
-    free: {
-        maxStates: 2, maxClosedStates: 2, maxFramesPerState: 3,
-        emotionsEnabled: false, hotkeysEnabled: false,
-        miniAppEnabled: false, calibrationEnabled: false,
-        maxSessionParticipants: 3,
-    },
-    premium: {
-        maxStates: Infinity, maxClosedStates: Infinity, maxFramesPerState: Infinity,
-        emotionsEnabled: true, hotkeysEnabled: true,
-        miniAppEnabled: true, calibrationEnabled: true,
-        maxSessionParticipants: 10,
-    },
-    streamer: {
-        maxStates: Infinity, maxClosedStates: Infinity, maxFramesPerState: Infinity,
-        emotionsEnabled: true, hotkeysEnabled: true,
-        miniAppEnabled: true, calibrationEnabled: true,
-        maxSessionParticipants: 20,
-    },
-};
-
-function getUserTier(discordId) {
-    // 1. Abonnement direct actif
-    const sub = stmts.getSubscription.get(discordId);
-    if (sub) {
-        if (sub.expires_at && new Date(sub.expires_at) < new Date()) {
-            stmts.expireSubscriptions.run();
-        } else {
-            return sub.tier;
-        }
-    }
-    // 2. Couvert par un pack streamer
-    const seat = stmts.getSeatByUser.get(discordId);
-    if (seat && seat.sub_status === 'active') {
-        return 'premium'; // couvert par un pack streamer → premium
-    }
-    return 'free';
-}
-
-function loadTier(req, res, ctx) {
-    if (!ctx.session) return true;
-    ctx.tier = getUserTier(ctx.session.discordId);
-    ctx.tierLimits = TIER_LIMITS[ctx.tier] || TIER_LIMITS.free;
-    return true;
-}
-
-function requirePremium(req, res, ctx) {
-    if (!ctx.tier || ctx.tier === 'free') {
-        return json(res, { error: "Fonctionnalité premium requise", tier: 'free', upgrade: true }, 403, req), false;
-    }
-    return true;
-}
+// TIER_LIMITS, getUserTier, loadTier, requirePremium importés depuis src/services/tierService.js
 
 // ════════════════════════════════════════════════════════════════
 // MULTIPART PARSER
@@ -1068,40 +564,16 @@ function parseMultipart(body, boundary) {
 // ════════════════════════════════════════════════════════════════
 // SESSIONS & AUTHENTIFICATION OAuth2 Discord
 // ════════════════════════════════════════════════════════════════
-// FLUX OAuth2 (Authorization Code Flow) :
-//   1. /auth/login → redirige vers discord.com/oauth2/authorize?state=RANDOM
-//      Le "state" est un token aléatoire stocké côté serveur pour prévenir
-//      les attaques CSRF (Cross-Site Request Forgery).
-//   2. Discord demande la permission à l'utilisateur, puis redirige vers
-//      /auth/callback?code=XXX&state=YYY
-//   3. On vérifie que state=YYY correspond bien à ce qu'on a envoyé.
-//   4. On échange code=XXX contre un access_token via l'API Discord (requête serveur-serveur).
-//   5. On récupère le profil Discord (/users/@me) avec cet access_token.
-//   6. On crée une session locale (Map en mémoire) et on pose un cookie signé.
-//
-// COOKIES SIGNÉS (HMAC) :
-//   La valeur du cookie = sessionId + "." + HMAC(sessionId, SESSION_SECRET).
-//   Si un attaquant modifie le sessionId dans son cookie, la signature ne
-//   correspondra plus et on rejettera la requête. Cela empêche la falsification
-//   de cookies sans connaître le secret serveur.
-//   Note : timingSafeEqual() est utilisé pour comparer les signatures, évitant
-//   les attaques par "timing" (deviner octet par octet selon le temps de réponse).
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
-const sessions = new Map();
-const oauthStates = new Map();
-const AUTH_ENABLED = Boolean(process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET);
+// sessions, oauthStates, AUTH_ENABLED, parseCookies, getSession,
+// createSession, setSessionCookie, getUserRole importés depuis src/services/authService.js
+// requireAuth, requireAdmin, requireClientOrAdmin importés depuis src/http/middleware.js
 
-// Nettoyage périodique des sessions expirées et des états OAuth (toutes les 60s)
+const deviceAuthRequests = new Map(); // deviceCode → { userCode, discordId?, status, deviceName, expiresAt, appToken? }
+
+// Nettoyage périodique des device auth requests + DB (sessions/auth nettoyées par authService.js)
 setInterval(() => {
-    const now = Date.now();
-    for (const [sid, s] of sessions) {
-        if (s.expiresAt < now) sessions.delete(sid);
-    }
-    for (const [state, data] of oauthStates) {
-        const exp = typeof data === 'number' ? data : data?.expiresAt;
-        if (now > exp) oauthStates.delete(state);
-    }
     // Nettoyage device auth requests expirés
+    const now = Date.now();
     for (const [k, v] of deviceAuthRequests) {
         if (now > v.expiresAt) deviceAuthRequests.delete(k);
     }
@@ -1113,170 +585,19 @@ setInterval(() => {
     } catch {}
 }, 60_000);
 
-function generateSessionId() { return crypto.randomBytes(32).toString("hex"); }
-
-function signCookie(value) {
-    const sig = crypto.createHmac("sha256", SESSION_SECRET).update(value).digest("base64url");
-    return `${value}.${sig}`;
-}
-
+// Compatibilité: getUserRole disponible via authService
+// verifyCookie utilisé dans handleAuthLogout — accès via parseCookies + sessions Map
 function verifyCookie(signed) {
+    // Ré-implémentation locale pour handleAuthLogout qui en a besoin directement
     const idx = signed.lastIndexOf('.');
     if (idx === -1) return null;
     const value = signed.slice(0, idx);
     const sig = signed.slice(idx + 1);
+    const SESSION_SECRET = process.env.SESSION_SECRET;
+    if (!SESSION_SECRET) return null;
     const expected = crypto.createHmac("sha256", SESSION_SECRET).update(value).digest("base64url");
     if (sig.length !== expected.length) return null;
     return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)) ? value : null;
-}
-
-function parseCookies(req) {
-    const cookies = {};
-    (req.headers.cookie || '').split(';').forEach(pair => {
-        const [k, ...v] = pair.trim().split('=');
-        if (k) cookies[k.trim()] = v.join('=');
-    });
-    return cookies;
-}
-
-function setSessionCookie(res, sessionId) {
-    const signed = signCookie(sessionId);
-    const maxAge = 7 * 24 * 60 * 60;
-    const secure = BASE_URL.startsWith('https://') ? '; Secure' : '';
-    res.setHeader('Set-Cookie', `pngtuber_session=${signed}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`);
-}
-
-function getSession(req) {
-    const cookies = parseCookies(req);
-    const signed = cookies['pngtuber_session'];
-    if (!signed) return null;
-    const sessionId = verifyCookie(signed);
-    if (!sessionId) return null;
-    const session = sessions.get(sessionId);
-    if (!session || session.expiresAt < Date.now()) {
-        sessions.delete(sessionId);
-        return null;
-    }
-    return session;
-}
-
-function createSession(discordUser, userGuildIds = []) {
-    const id = generateSessionId();
-    sessions.set(id, {
-        discordId: discordUser.id,
-        username: discordUser.username,
-        avatar: discordUser.avatar,
-        role: getUserRole(discordUser.id),
-        userGuildIds,
-        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-    });
-    return id;
-}
-
-// ── Middleware d'authentification ────────────────────────────────
-// PATTERN MIDDLEWARE :
-// Un middleware est une fonction (req, res, ctx) → bool.
-// Si elle retourne false, la chaîne s'arrête (réponse déjà envoyée).
-// Si elle retourne true, le handler suivant s'exécute.
-//
-// requireAuth supporte deux modes d'authentification :
-//   1. Cookie de session (navigateur web via OAuth2)
-//   2. Bearer token (app/agent local via Device Auth Flow)
-//
-// Pour le Bearer token, on ne stocke JAMAIS le token brut en base.
-// On stocke uniquement son hash SHA-256. Ainsi, même si la DB est compromise,
-// les tokens restent inutilisables (on ne peut pas retrouver le token brut
-// à partir du hash sans le token original).
-function requireAuth(req, res, ctx) {
-    if (!AUTH_ENABLED) {
-        // Injecter une session fictive pour éviter les crashes sur ctx.session.discordId
-        ctx.session = ctx.session || { discordId: 'anonymous', role: 'admin', username: 'Anonymous' };
-        return true;
-    }
-    // Support Bearer token (mini-agent local / app)
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-        const rawToken = authHeader.slice(7);
-        const hash = crypto.createHash('sha256').update(rawToken).digest('hex');
-        const row = stmts.getAppToken.get(hash);
-        if (row) {
-            stmts.touchAppToken.run(hash);
-            // Les app tokens sont limités au rôle 'client' — pas d'accès admin via token
-            const actualRole = getUserRole(row.discord_id);
-            ctx.session = {
-                discordId: row.discord_id,
-                role: actualRole === 'admin' ? 'client' : actualRole,
-                actualRole, // rôle réel conservé pour référence
-                appAuth: true,
-                deviceName: row.device_name,
-            };
-            return true;
-        }
-        json(res, { error: "Token API invalide ou révoqué" }, 401, req);
-        return false;
-    }
-    const session = getSession(req);
-    if (!session) {
-        const accept = req.headers.accept || '';
-        if (accept.includes('application/json') || req.headers['content-type']) {
-            json(res, { error: "Non authentifié" }, 401, req);
-            return false;
-        }
-        res.writeHead(302, { Location: '/auth/login' });
-        res.end();
-        return false;
-    }
-    // Forcer re-login si la session n'a pas userGuildIds (ancien scope sans guilds)
-    if (session.role !== 'admin' && !session.userGuildIds) {
-        // Invalider la session et rediriger vers login
-        const cookies = parseCookies(req);
-        const signed = cookies['pngtuber_session'];
-        if (signed) { const sid = verifyCookie(signed); if (sid) sessions.delete(sid); }
-        const accept = req.headers.accept || '';
-        if (accept.includes('application/json') || req.headers['content-type']) {
-            json(res, { error: "Session expirée, veuillez vous reconnecter" }, 401, req);
-            return false;
-        }
-        res.setHeader('Set-Cookie', 'pngtuber_session=; Path=/; HttpOnly; Max-Age=0');
-        res.writeHead(302, { Location: '/auth/login' });
-        res.end();
-        return false;
-    }
-    ctx.session = session;
-    return true;
-}
-
-// ── Middleware admin / client ────────────────────────────────────
-// RBAC (Role-Based Access Control) — contrôle d'accès par rôles :
-//   - admin   : accès complet (bot, permissions, abonnements…)
-//   - client  : peut uniquement lire/modifier ses propres données
-//   - viewer  : lecture seule (routes publiques)
-//
-// requireClientOrAdmin vérifie que le token dans la requête appartient
-// bien à l'utilisateur connecté (un client ne peut pas modifier le profil
-// d'un autre client même s'il connaît son token).
-function requireAdmin(req, res, ctx) {
-    if (!AUTH_ENABLED) return true;
-    if (!ctx.session || ctx.session.role !== 'admin') {
-        json(res, { error: "Accès réservé à l'administrateur" }, 403, req);
-        return false;
-    }
-    return true;
-}
-
-function requireClientOrAdmin(req, res, ctx) {
-    if (!AUTH_ENABLED) return true;
-    if (!ctx.session) { json(res, { error: "Non authentifié" }, 401, req); return false; }
-    if (ctx.session.role === 'admin') return true;
-    if (ctx.session.role === 'client') {
-        const paramToken = ctx.params?.token;
-        const ownToken = tokenFor(ctx.session.discordId);
-        if (paramToken && paramToken === ownToken) return true;
-        // For body-based tokens, check ctx._bodyToken
-        if (ctx._bodyToken && ctx._bodyToken === ownToken) return true;
-    }
-    json(res, { error: "Accès refusé" }, 403, req);
-    return false;
 }
 
 async function parseBodyToken(req, res, ctx) {
@@ -1483,59 +804,7 @@ function shutdownApp() {
 // ════════════════════════════════════════════════════════════════
 // MINI-ROUTEUR & HANDLERS
 // ════════════════════════════════════════════════════════════════
-// POURQUOI PAS EXPRESS ?
-// Express ajoute ~1 Mo de dépendances pour un problème qu'on résout
-// en ~30 lignes. Le serveur HTTP natif de Node (node:http) est très
-// capable. Implémenter un mini-routeur permet de :
-//   - Contrôler exactement le comportement (middleware, params, auth)
-//   - Éviter les vulnérabilités de la chaîne de dépendances (supply chain)
-//   - Avoir un code entièrement auditable
-//
-// FONCTIONNEMENT :
-//   route(METHOD, '/path/:param', ...middlewares, handler)
-//   → enregistre la route dans le tableau routes[]
-//
-//   matchRoute(method, pathname)
-//   → parcourt routes[] et teste chaque pattern :
-//       - correspondance exacte : '/status' === '/status'
-//       - paramètres dynamiques : '/frames/:token' match '/frames/abc123'
-//         et extrait { token: 'abc123' } dans ctx.params
-//       - wildcard suffix : '/images/*' match tout chemin commençant par '/images/'
-//
-//   Dans le handler HTTP principal (createServer), on appelle les middlewares
-//   en séquence. Si l'un retourne false, on s'arrête (réponse déjà envoyée).
-const routes = [];
-
-function route(method, pattern, ...handlers) {
-    routes.push({ method, pattern, handlers });
-}
-
-function matchRoute(method, pathname) {
-    for (const r of routes) {
-        if (r.method !== method && r.method !== '*') continue;
-        if (r.pattern === pathname) return { route: r, params: {} };
-        const rParts = r.pattern.split('/');
-        const pParts = pathname.split('/');
-        if (rParts.length === pParts.length) {
-            const params = {};
-            let match = true;
-            for (let i = 0; i < rParts.length; i++) {
-                if (rParts[i].startsWith(':')) {
-                    params[rParts[i].slice(1)] = decodeURIComponent(pParts[i]);
-                } else if (rParts[i] !== pParts[i]) {
-                    match = false; break;
-                }
-            }
-            if (match) return { route: r, params };
-        }
-        if (r.pattern.endsWith('/*')) {
-            const prefix = r.pattern.slice(0, -2);
-            if (pathname.startsWith(prefix + '/') || pathname === prefix)
-                return { route: r, params: { '*': pathname.slice(prefix.length + 1) } };
-        }
-    }
-    return null;
-}
+// route(), matchRoute() importés depuis src/http/router.js
 
 // ── Route handlers ──────────────────────────────────────────────
 
@@ -2410,12 +1679,12 @@ async function handleAuthCallback(req, res, ctx) {
         const redirectTo = nextUrl || '/';
         if (role === 'admin') {
             const sessionId = createSession(discordUser, userGuildIds);
-            setSessionCookie(res, sessionId);
+            setSessionCookie(res, sessionId, BASE_URL);
             res.writeHead(302, { Location: redirectTo });
             res.end();
         } else if (role === 'client') {
             const sessionId = createSession(discordUser, userGuildIds);
-            setSessionCookie(res, sessionId);
+            setSessionCookie(res, sessionId, BASE_URL);
             res.writeHead(302, { Location: redirectTo });
             res.end();
         } else {
@@ -2797,7 +2066,6 @@ async function handleResolveViewerSession(req, res, ctx) {
 //   - Les deviceCodes expirent après 15 minutes
 //   - L'appToken final est un token aléatoire 32 octets → seul son SHA-256 est en DB
 //   - Les appTokens sont limités au rôle 'client' (jamais admin)
-const deviceAuthRequests = new Map(); // deviceCode → { userCode, discordId?, status, deviceName, expiresAt, appToken? }
 
 function generateUserCode() {
     // Code 8 chars lisible: XXXX-XXXX (alphanum majuscules sans ambiguïté)
@@ -3738,6 +3006,20 @@ function broadcastFrameUpdate(token) {
     }
 }
 
+// ── Compatibilité tokenToUid/uidToToken ────────────────────────
+// Proxies vers les fonctions du tokenService (tokenFor/uidFor).
+// Supporte .get() et .delete() (delete = no-op sur le module, ok pour le GC local).
+const tokenToUid = {
+    get: (token) => uidFor(token),
+    has: (token) => !!uidFor(token),
+    delete: (_token) => {}, // le module gère son propre GC
+};
+const uidToToken = {
+    get: (userId) => tokenFor(userId),
+    has: (userId) => true, // tokenFor crée le token si nécessaire
+    delete: (_userId) => {},
+};
+
 // ════════════════════════════════════════════════════════════════
 // FFT
 // ════════════════════════════════════════════════════════════════
@@ -3800,13 +3082,7 @@ function computeFreqBands(buffer) {
 //   7. Centroïde spectral → fréquence "center of gravity" → brillance de la voix
 //
 // Toutes ces métriques alimentent la détection d'émotion (voir computeEmotion).
-// Historique fréquences par user pour calcul de deltas
-const userFreqHistory = new Map();
-// Baseline vocale par user (EMA) — calibration continue
-const userBaseline = new Map();
-// Sessions d'enregistrement d'empreintes vocales actives
-// token → { startedAt, durationMs, samples: [{ db, freq:{low,mid,high}, zcr, centroid, energyVar }] }
-const recordingSessions = new Map();
+// userFreqHistory, userBaseline, recordingSessions importés depuis src/services/audioService.js
 // userId → { dbMean, dbStd, freqMean:{low,mid,high}, freqStd:{low,mid,high}, sampleCount, lastUpdate, dirty }
 const BASELINE_ALPHA = 0.005; // lissage lent (~10s convergence à 20Hz)
 

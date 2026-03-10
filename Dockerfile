@@ -36,6 +36,9 @@ COPY --from=frontend-build /app/dist ./dist
 COPY package.json ./
 COPY index.js ./
 
+# Modules ES backend (src/)
+COPY src/ ./src/
+
 # Pages standalone non-migrées (viewer OBS, positioner, styles)
 COPY viewer.html positioner.html styles.css ./
 

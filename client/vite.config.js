@@ -24,6 +24,7 @@ export default defineConfig({
       '/known-users':  { target: 'http://localhost:3350', changeOrigin: true },
       '/delete-user':  { target: 'http://localhost:3350', changeOrigin: true },
       '/invite':       { target: 'http://localhost:3350', changeOrigin: true },
+      '/styles.css':   { target: 'http://localhost:3350', changeOrigin: true },
       '/auth': {
         target: 'http://localhost:3350',
         changeOrigin: true,
