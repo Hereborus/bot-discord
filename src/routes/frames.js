@@ -1,4 +1,22 @@
-// ── Routes frames (upload, reorder, delete, move) ───────────────
+/**
+ * Routes frames — upload, réordonnancement, suppression, déplacement
+ * ===================================================================
+ * Gère le cycle de vie complet des frames d'avatar :
+ *   - GET  /frames/:token  : liste des frames par état audio
+ *   - POST /upload         : upload multipart, re-encodage WebP via sharp
+ *   - POST /reorder        : réordonner les frames d'un état
+ *   - POST /delete-frame   : supprimer une frame (fichier + DB)
+ *   - POST /move-frame     : déplacer une frame vers un autre état
+ *
+ * Sécurité :
+ *   - SAFE_STATE_KEY et SAFE_FILENAME filtrent les noms pour prévenir
+ *     toute traversée de chemin (path traversal).
+ *   - path.resolve() + startsWith() comme garde supplémentaire.
+ *   - Re-encodage sharp : neutralise les payloads dans les métadonnées image.
+ *
+ * Dépendances : node:path, node:fs, sharp, http/helpers, db/repos/users,
+ *               services/tokenService, services/tierService
+ */
 import path from 'node:path';
 import fs from 'node:fs';
 import sharp from 'sharp';
@@ -10,6 +28,7 @@ import { TIER_LIMITS } from '../services/tierService.js';
 const DATA_ROOT  = process.env.DATA_ROOT || process.cwd();
 const IMAGES_DIR = path.join(DATA_ROOT, 'images');
 
+// Regex de validation : seuls les caractères alphanumériques, tirets et underscores autorisés
 const SAFE_STATE_KEY = /^[a-zA-Z0-9_-]{1,64}$/;
 const SAFE_FILENAME  = /^[a-zA-Z0-9._-]{1,255}$/;
 
@@ -17,6 +36,7 @@ const SAFE_FILENAME  = /^[a-zA-Z0-9._-]{1,255}$/;
 export async function handleGetFrames(req, res, ctx) {
     const { token } = ctx.params;
     const rows = frameRepo.byToken.all(token);
+    // Grouper par state_key pour retourner { silent: [...], low: [...], ... }
     const result = {};
     for (const row of rows) {
         if (!result[row.state_key]) result[row.state_key] = [];
@@ -48,16 +68,18 @@ export async function handleUpload(req, res, ctx) {
     const maxOrder = frameRepo.maxOrder.get(tokenField, stateKey)?.max_order ?? -1;
     const ext      = path.extname(imagePart.filename).toLowerCase();
     const basename = path.basename(imagePart.filename, ext);
+    // Nom de sortie unique (timestamp) pour éviter les collisions + nettoyage des caractères spéciaux
     const outName  = `${Date.now()}_${basename.replace(/[^a-zA-Z0-9_-]/g, '_')}.webp`;
     const outPath  = path.join(destDir, outName);
 
-    // Re-encoder via sharp (sanitisation : supprime métadonnées, neutralise les payloads)
+    // Re-encoder via sharp — c'est la sanitisation principale :
+    // supprime les métadonnées EXIF/ICC et neutralise les payloads malveillants.
     await sharp(imagePart.data).webp({ quality: 90 }).toFile(outPath);
 
     const fileSize = fs.statSync(outPath).size;
     frameRepo.insert.run(tokenField, stateKey, outName, maxOrder + 1, ext, fileSize);
 
-    // S'assurer que l'utilisateur existe en DB
+    // Créer l'entrée utilisateur en DB si elle n'existe pas encore
     if (!userRepo.get.get(tokenField)) {
         userRepo.upsert.run(tokenField, '???', '{}');
     }
@@ -70,6 +92,7 @@ export async function handleReorder(req, res, ctx) {
     const { token, stateKey, order } = ctx._parsedBody || {};
     if (!token || !stateKey || !Array.isArray(order)) return json(res, { error: 'Données invalides' }, 400, req);
     const updateOrder = frameRepo.updateOrder;
+    // Utiliser une transaction si disponible pour garantir l'atomicité du réordonnancement
     const tx = frameRepo.updateOrder._db?.transaction
         ? frameRepo.updateOrder._db.transaction(() => { order.forEach((f, i) => updateOrder.run(i, token, stateKey, f)); })
         : null;
@@ -84,6 +107,7 @@ export async function handleDeleteFrame(req, res, ctx) {
     if (!SAFE_STATE_KEY.test(stateKey) || !SAFE_FILENAME.test(file)) return json(res, { error: 'Nom invalide' }, 400, req);
 
     const fp = path.resolve(path.join(IMAGES_DIR, token, stateKey, file));
+    // Garde finale : le chemin résolu doit rester sous IMAGES_DIR
     if (fp.startsWith(path.resolve(IMAGES_DIR))) {
         try { fs.unlinkSync(fp); } catch {}
     }

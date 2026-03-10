@@ -1,6 +1,17 @@
-// ── CORS dynamique + headers de sécurité ────────────────────────
-// "Access-Control-Allow-Origin: *" est interdit avec credentials=true.
-// On valide l'origine contre une liste blanche et on la retourne telle quelle.
+/**
+ * CORS dynamique + headers de sécurité
+ * ======================================
+ * "Access-Control-Allow-Origin: *" est interdit avec credentials=true
+ * (cookies de session). On valide l'origine contre une liste blanche et
+ * on la retourne telle quelle — technique standard pour CORS + credentials.
+ *
+ * BASE_URL est déduit automatiquement dans cet ordre :
+ *   1. Variable BASE_URL explicite
+ *   2. Origine de DISCORD_REDIRECT_URI
+ *   3. http://localhost:PORT (fallback développement)
+ *
+ * Dépendances : aucune (lecture des variables d'environnement uniquement)
+ */
 const PORT    = process.env.LEVELS_PORT || 3000;
 const BASE_URL = (() => {
     if (process.env.BASE_URL) return process.env.BASE_URL.replace(/\/+$/, '');
@@ -16,9 +27,10 @@ export function getAllowedOrigins() {
     const origins = new Set([
         `http://localhost:${PORT}`,
         `http://127.0.0.1:${PORT}`,
-        `http://localhost:5173`,  // Vite dev server
+        `http://localhost:5173`,  // Vite dev server (React)
         BASE_URL,
     ]);
+    // Origines supplémentaires configurables (ex: domaine d'une mini-app Tauri)
     if (process.env.CORS_ORIGINS) {
         for (const o of process.env.CORS_ORIGINS.split(',')) origins.add(o.trim());
     }
@@ -34,11 +46,14 @@ export function corsHeaders(req) {
         'Access-Control-Allow-Credentials': 'true',
     };
     if (origin && allowed.includes(origin)) {
+        // Retourner l'origine exacte plutôt que * — requis avec credentials
         headers['Access-Control-Allow-Origin'] = origin;
     } else if (!origin) {
+        // Pas d'origine = requête directe (curl, OBS browser source) → wildcard OK
         headers['Access-Control-Allow-Origin'] = '*';
         delete headers['Access-Control-Allow-Credentials'];
     }
+    // Si origin non autorisée : aucun header CORS → le navigateur bloquera
     return headers;
 }
 
@@ -49,6 +64,7 @@ export function securityHeaders(extra = {}) {
         'Referrer-Policy':        'strict-origin-when-cross-origin',
         ...extra,
     };
+    // HSTS uniquement en HTTPS — inutile (et contre-productif) en HTTP local
     if (BASE_URL.startsWith('https://'))
         h['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains';
     return h;

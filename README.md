@@ -74,28 +74,38 @@ Toute la configuration se fait via des variables d'environnement. Voir [`.env.ex
 
 ## Architecture
 
-### Backend — `index.js`
+### Backend — `index.js` + modules `src/`
 
-Serveur mono-fichier contenant :
+`index.js` (~3650 lignes) orchestre l'ensemble et importe les modules de `src/` :
 
-- **Serveur HTTP** (natif, sans Express) avec mini-routeur + pattern middleware
+- **Serveur HTTP** (natif, sans Express) avec mini-routeur + pattern middleware (`src/http/`)
 - **Bot Discord** (discord.js v14 + @discordjs/voice) avec commandes texte (`!join`, `!disconnect`, `!status`) et commandes slash
 - **Pipeline audio** : Opus → PCM (prism-media) → RMS/dB → FFT 1024 points → 3 bandes de fréquences → ZCR + centroïde spectral + variance d'énergie → matching d'empreintes vocales avec hystérésis
 - **Serveur WebSocket** pour le streaming des niveaux audio en temps réel (20fps)
-- **Base de données SQLite** (better-sqlite3) pour les frames, configs utilisateur, permissions, abonnements, sessions, invitations, notifications, app tokens
-- **OAuth2 + auth par rôles** avec cookies de session sécurisés + Device Auth Flow (Bearer tokens) pour agents locaux
-- **Système d'abonnements** (free/premium/streamer) avec enforcement côté serveur (limites upload, gating premium)
-- **Sessions + invitations + notifications** temps réel via WebSocket
+- **Base de données SQLite** (better-sqlite3) — schéma + repositories dans `src/db/`
+- **OAuth2 + auth par rôles** avec cookies de session sécurisés + Device Auth Flow (Bearer tokens) — `src/services/authService.js`
+- **Système d'abonnements** (free/premium/streamer) avec enforcement côté serveur — `src/services/tierService.js`
+- **Sessions + invitations + notifications** temps réel via WebSocket — `src/routes/sessions.js`
 
-### Frontend — Pages HTML autonomes
+**Structure `src/` :**
+
+| Répertoire | Contenu |
+|------------|---------|
+| `src/services/` | rateLimiter, tokenService, tierService, authService, audioService, voiceService |
+| `src/db/` | database.js (SQLite init + schéma), repos/ (users, permissions, subscriptions, sessions, appTokens) |
+| `src/http/` | cors.js, helpers.js, router.js, middleware.js |
+| `src/routes/` | levels.js, frames.js, notifications.js, subscriptions.js, sessions.js, admin.js |
+
+### Frontend — React (Vite) + pages HTML standalone
+
+**Panneau de contrôle** : application React 18 dans `client/`, buildée en `dist/`. Le backend sert `dist/index.html` pour `/`. Le legacy `index.html` a été supprimé lors de la migration.
 
 | Page | Description |
 |------|-------------|
-| `index.html` | Panneau de contrôle unifié (admin + client, visibilité par rôle) + sessions, abonnements, applications, notifications |
 | `viewer.html` | Source navigateur OBS — rendu des avatars PNGTuber animés |
 | `positioner.html` | Éditeur de position/échelle des frames sur canvas |
 
-Toutes les pages embarquent leur JavaScript en inline. Les fichiers `.js` externes ont été supprimés (legacy).
+`viewer.html` et `positioner.html` restent des fichiers HTML standalone (non migrés — usage OBS exclusivement).
 
 ### Flux de données
 
@@ -123,7 +133,7 @@ Salon vocal Discord
    (20fps)          (polling HTTP)
         │               │
         ▼               ▼
-   viewer.html     index.html
+   viewer.html     React App (dist/)
    (overlay OBS)   (panneau de contrôle)
 ```
 
@@ -328,9 +338,13 @@ Le WebSocket passe automatiquement en `wss://` grâce au reverse proxy.
 ## Développement
 
 ```bash
-npm start                    # Lancer en local
+npm run dev:api              # Lancer le backend (node index.js)
+npm run dev:ui               # Lancer le Vite dev server React (port 5173)
+cd client && npm install     # Installer les dépendances frontend
+npm run build:ui             # Builder React → dist/
+npm start                    # Lancer en local (backend seul)
 node --check index.js        # Vérification syntaxe (pas de suite de tests)
-docker compose build         # Reconstruire l'image Docker
+docker compose build         # Reconstruire l'image Docker (inclut npm run build:ui)
 docker compose up -d         # Démarrer le conteneur
 docker compose logs -f       # Suivre les logs
 ```
@@ -338,16 +352,22 @@ docker compose logs -f       # Suivre les logs
 ### Structure du projet
 
 ```
-├── index.js            # Backend : bot + HTTP + audio + auth + DB
-├── index.html          # Panneau de contrôle (admin/client unifié)
-├── viewer.html         # Source navigateur OBS (viewer)
-├── positioner.html     # Éditeur de position/échelle des frames
-├── styles.css          # Styles partagés (thème sombre)
-├── package.json        # Dépendances
-├── Dockerfile          # Build multi-étages Alpine
+├── index.js            # Backend : bot + HTTP + audio + auth + DB (orchestre src/)
+├── src/
+│   ├── services/       # rateLimiter, tokenService, tierService, authService, audioService, voiceService
+│   ├── db/             # database.js + repos/ (users, permissions, subscriptions, sessions, appTokens)
+│   ├── http/           # cors.js, helpers.js, router.js, middleware.js
+│   └── routes/         # levels.js, frames.js, notifications.js, subscriptions.js, sessions.js, admin.js
+├── client/             # Application React 18 + Vite (panneau de contrôle)
+│   └── src/            # Composants, hooks, contexte, api.js
+├── dist/               # Build React généré (servi par le backend en production)
+├── viewer.html         # Source navigateur OBS (standalone, non migré)
+├── positioner.html     # Éditeur de position/échelle des frames (standalone)
+├── package.json        # Dépendances backend
+├── Dockerfile          # Build multi-étages : frontend-build → backend-build → runtime
 ├── docker-compose.yml  # Configuration conteneur
 ├── .env.example        # Modèle de variables d'environnement
-└── data/               # Données runtime (DB SQLite, images)
+└── data/               # Données runtime (DB SQLite, images uploadées)
 ```
 
 ### Conventions de code
@@ -355,7 +375,7 @@ docker compose logs -f       # Suivre les logs
 - **Langage** : JavaScript ES Modules, pas de TypeScript
 - **Style** : Fonctionnel, async/await, pas de classes
 - **Commentaires** : En français
-- **Frontend** : Manipulation DOM directe, sans framework
+- **Frontend** : React 18 + Vite (panneau de contrôle), HTML inline (viewer/positioner OBS)
 - **Backend** : Serveur HTTP natif, sans Express
 
 ---

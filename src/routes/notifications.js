@@ -1,4 +1,16 @@
-// ── Routes notifications ─────────────────────────────────────────
+/**
+ * Routes notifications — lecture et marquage
+ * ===========================================
+ * Trois endpoints pour la gestion des notifications in-app :
+ *   - GET  /api/notifications        : liste (tout ou non-lues uniquement)
+ *   - POST /api/notifications/:id/read    : marquer une notification comme lue
+ *   - POST /api/notifications/read-all   : tout marquer comme lu
+ *
+ * Les notifications sont créées par d'autres routes (sessions.js pour les
+ * invitations) et broadcastées en temps réel via WebSocket depuis index.js.
+ *
+ * Dépendances : http/helpers, db/repos/appTokens (notifications)
+ */
 import { json } from '../http/helpers.js';
 import { notifications as notifRepo } from '../db/repos/appTokens.js';
 
@@ -15,6 +27,7 @@ export async function handleGetNotifications(req, res, ctx) {
 
 // POST /api/notifications/:id/read
 export async function handleMarkRead(req, res, ctx) {
+    // Le discordId est passé pour éviter qu'un user marque les notifs d'un autre
     notifRepo.markRead.run(Number(ctx.params.id), ctx.session.discordId);
     json(res, { ok: true }, 200, req);
 }
