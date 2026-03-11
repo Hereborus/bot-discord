@@ -10,17 +10,17 @@
  * Dépendances : node:crypto, db/repos/users (fallback DB)
  */
 import crypto from 'node:crypto';
-
-const HASH_SECRET = process.env.USER_HASH_SECRET;
+import { users } from '../db/repos/users.js';
 
 // Cache en mémoire : recalculer le HMAC à chaque requête serait inutile.
 // Les maps sont peuplées au fur et à mesure des connexions vocales.
 const tokenToUid = new Map(); // token → userId
 const uidToToken = new Map(); // userId → token
 
+// Lu lazily pour éviter que le module soit initialisé avant dotenv.config()
 function hashUid(userId) {
     return crypto
-        .createHmac('sha256', HASH_SECRET)
+        .createHmac('sha256', process.env.USER_HASH_SECRET)
         .update(String(userId))
         .digest('hex')
         .slice(0, 16);
@@ -41,6 +41,5 @@ export function uidFor(token) {
 export function isKnownToken(token) {
     if (tokenToUid.has(token)) return true;
     // Fallback DB pour un user connu en DB mais pas encore passé par le pipeline audio
-    const { users } = await import('../db/repos/users.js').catch(() => ({ users: null }));
-    return users ? !!users.get.get(token) : false;
+    try { return !!users?.get?.get(token); } catch { return false; }
 }

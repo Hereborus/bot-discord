@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useApp } from './context/AppContext.jsx';
 import { apiJson, getApiBase } from './api.js';
 
+import { PositionerApp } from './components/positioner/PositionerApp.jsx';
+
 import { usePollLevels }     from './hooks/usePollLevels.js';
 import { useWebSocket }      from './hooks/useWebSocket.js';
 import { useToast }          from './hooks/useToast.js';
@@ -26,16 +28,21 @@ import { AppTokensTab }     from './components/tabs/AppTokensTab.jsx';
 // Modal inline pour la configuration d'un utilisateur (frames upload)
 import { UserSettingsModal } from './components/avatars/UserSettingsModal.jsx';
 
-export default function App() {
+// ── Détection de route /positioner (évaluée une seule fois au module load) ──
+// window.location.pathname est stable durant toute la durée de vie de la page.
+const IS_POSITIONER = window.location.pathname === '/positioner';
+
+// ── Composant principal de l'app de contrôle ────────────────────
+function ControlApp() {
   const {
     setAuthRole, setEffectiveRole, setMyToken,
     setTier, setTierLimits, setAuthUser,
   } = useApp();
 
-  const [activeTab, setActiveTab]       = useState('avatars');
-  const [obsModalOpen, setObsModalOpen] = useState(false);
+  const [activeTab, setActiveTab]         = useState('avatars');
+  const [obsModalOpen, setObsModalOpen]   = useState(false);
   const [settingsToken, setSettingsToken] = useState(null);
-  const [botInfo, setBotInfo]           = useState(null);
+  const [botInfo, setBotInfo]             = useState(null);
 
   const { toasts, toast }   = useToast();
   const { notifications, load: loadNotifs, markRead, markAllRead, push: pushNotif } = useNotifications();
@@ -138,4 +145,12 @@ export default function App() {
       <ToastContainer toasts={toasts} />
     </>
   );
+}
+
+// ── Export par défaut — router simple basé sur le pathname ───────
+// /positioner → outil d'édition de positions des frames (PositionerApp)
+// tout autre chemin → panneau de contrôle normal (ControlApp)
+export default function App() {
+  if (IS_POSITIONER) return <PositionerApp />;
+  return <ControlApp />;
 }
