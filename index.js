@@ -82,7 +82,6 @@ import { BASE_URL, getAllowedOrigins, corsHeaders, securityHeaders } from './src
 import { json, serveFile, readBody, parseJsonBody, escapeHtml, MAX_BODY_SIZE } from './src/http/helpers.js';
 import { route, matchRoute } from './src/http/router.js';
 import { requireAuth, requireAdmin, requireClientOrAdmin } from './src/http/middleware.js';
-// ── Modules extraits vers src/ ───────────────────────────────────
 import { handleAuthLogin, handleAuthCallback, handleAuthLogout, handleAuthMe, handleTestMode } from './src/routes/auth.js';
 import {
     handleGuilds, handleGuildChannels, handleGuildMembers,
@@ -118,15 +117,11 @@ import {
     computeFreqBands, subscribeUser,
     loadBaselineFromConfig, startBaselinePersistence,
 } from './src/bot/audio.js';
-// La calibration vocale (fingerprints, empreintes) est archivée dans src/bot/calibration.js (dormant)
-// FFT pipeline (fft-js) → src/bot/audio.js
+// La calibration vocale (fingerprints, empreintes) est archivée dans src/bot/calibration.js (dormant, non importé)
 
 const SOURCE_ROOT = process.cwd();
 const STATIC_ROOT = SOURCE_ROOT;
 const DATA_ROOT = process.env.DATA_ROOT || SOURCE_ROOT;
-
-// ── Validation magic bytes pour images ──────────────────────────
-// Déplacée dans src/routes/upload.js (utilisée uniquement par handleUpload).
 
 // ── Validation stateKey / noms de fichier ───────────────────────
 // POURQUOI CES REGEX ?
@@ -160,7 +155,6 @@ function getClientIp(req) {
     return req.socket?.remoteAddress || 'unknown';
 }
 
-// rateLimit() importé depuis src/services/rateLimiter.js
 const IMAGES_DIR = path.join(DATA_ROOT, "images");
 const META_DIR = path.join(DATA_ROOT, "meta");
 const ENV_PATH = path.join(DATA_ROOT, ".env");
@@ -168,8 +162,6 @@ const ENV_PATH = path.join(DATA_ROOT, ".env");
 if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
 if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
 if (!fs.existsSync(META_DIR)) fs.mkdirSync(META_DIR, { recursive: true });
-
-// saveVoiceState, loadVoiceState, getAutoReconnect, setAutoReconnect importés depuis src/services/voiceService.js
 
 // ── Mode suivi (follow) — le bot suit un utilisateur entre les canaux vocaux ──
 let followTarget = null; // { discordId, requestedBy, displayName }
@@ -298,10 +290,6 @@ ensureEnvKey("SESSION_SECRET", crypto.randomBytes(32).toString("hex"));
 
 dotenv.config({ path: ENV_PATH });
 
-// tokenFor, uidFor importés depuis src/services/tokenService.js
-// Compatibilité avec le code qui utilise tokenToUid/uidToToken directement
-// (accès interne aux Maps du tokenService — partagées via le module singleton)
-// Note: on accède aux maps via les fonctions exportées uniquement.
 function hashUid(userId) {
     // Fallback interne — utilisé dans migrateExistingData et writeCfg
     return tokenFor(userId);
@@ -316,7 +304,6 @@ function stateDirByToken(token, sk) {
     return path.join(IMAGES_DIR, token, sk);
 }
 
-// AUDIO, userLevels importés depuis src/services/audioService.js
 // Viewer sessions: sessionId → { userToken, createdAt } — persisté sur disque
 const VIEWER_SESSIONS_PATH = path.join(DATA_ROOT, "viewer-sessions.json");
 const viewerSessions = new Map();
@@ -351,9 +338,6 @@ let isShuttingDown = false;
 // ════════════════════════════════════════════════════════════════
 // UTILITAIRES HTTP
 // ════════════════════════════════════════════════════════════════
-// BASE_URL, getAllowedOrigins, corsHeaders, securityHeaders importés depuis src/http/cors.js
-// json, serveFile, readBody, parseJsonBody, escapeHtml, MAX_BODY_SIZE importés depuis src/http/helpers.js
-// MIME importé indirectement (disponible via src/http/helpers.js)
 
 function openDefaultBrowser(url) {
     if (process.env.PNGTUBER_NO_BROWSER === "1") return;
