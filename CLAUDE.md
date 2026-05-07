@@ -11,21 +11,55 @@ Discord PNGTuber bot with a local web UI and OBS viewer. The bot joins a voice c
 ## Commands
 
 ```bash
+# Développement
+npm run dev:api                    # Démarrer le backend (node index.js)
+npm run dev:ui                     # Démarrer Vite dev server (port 5173)
+cd client && npm install           # Installer les dépendances frontend
+
+# Build production
+npm run build:ui                   # Build React → dist/
 npm start                          # Run the bot locally (node index.js)
-docker compose build               # Build Docker image
+
+# Docker
+docker compose build               # Build Docker image (inclut npm run build)
 docker compose up -d               # Start in background
 docker compose down                # Stop
 docker compose logs -f             # Follow logs
-node --check index.js              # Syntax check (no test suite exists)
+node --check index.js              # Syntax check backend
 ```
 
 There are no lint or test scripts configured. Validation is manual (`node --check`).
 
+## Frontend — React (Vite)
+
+The control panel has been fully migrated to a React app in `client/`. The legacy `index.html` has been removed. Build React → `dist/` is functional and served by the backend.
+
+**Structure `client/src/` :**
+- `api.js` — fetch centralisé (`apiFetch`, `apiJson`, `apiPost`, `apiDelete`)
+- `context/AppContext.jsx` — état global (auth, audioConfig, configData, levels)
+- `hooks/` — `usePollLevels`, `useWebSocket`, `useToast`, `useNotifications`, `useAudioStates`
+- `components/layout/` — `Header`, `VoiceSidebar`, `TabBar`
+- `components/ui/` — `Toast`, `Modal`, `NotificationBell`
+- `components/tabs/` — un fichier par onglet (`AvatarsTab`, `AudioTab`, `SessionsTab`…)
+- `components/avatars/` — `UserCard`, `UserSettingsModal`
+
+**En développement :** Vite (port 5173) proxie les requêtes API vers le backend (port 3350).
+**En production :** `npm run build:ui` génère `dist/`. Le backend Node sert `dist/index.html` pour `/` et les assets Vite depuis `dist/assets/`.
+
+`viewer.html` et `positioner.html` restent des fichiers HTML standalone (non migrés — usage OBS).
+
 ## Architecture
 
-### Backend — `index.js` (single file)
+### Backend — `index.js` + modules `src/`
 
-All server logic lives in one file: Discord bot, HTTP server, audio pipeline, auth, file management, permissions.
+`index.js` (~3650 lignes, réduit depuis ~4374) importe désormais les modules de `src/` pour les sous-systèmes extraits. La logique restante dans `index.js` couvre : le bot Discord, le pipeline audio complet, le Device Auth Flow, le WebSocket, les routes auth OAuth2, et le serveur HTTP principal.
+
+**Modules `src/` actifs (wired dans index.js) :**
+- `src/services/` — rateLimiter, tokenService, tierService, authService, audioService (état partagé), voiceService
+- `src/db/database.js` — initialisation SQLite + schéma
+- `src/db/repos/` — users, permissions, subscriptions, sessions, appTokens
+- `src/http/` — cors, helpers, router, middleware
+- `src/routes/` — levels, frames, notifications, subscriptions, sessions, admin
 
 **Key subsystems:**
 - **Mini-router** with middleware pattern. Routes registered via `route(method, pattern, ...handlers)`. Handlers have signature `async function(req, res, ctx)` where `ctx = { url, params, session }`.
@@ -56,11 +90,11 @@ All server logic lives in one file: Discord bot, HTTP server, audio pipeline, au
 - `meta/permissions.json` — role assignments (discordId → role)
 - SQLite DB (`data/pngtuber.db`): users, frames, subscriptions, subscription_seats, pngtuber_sessions, session_participants, invitations, app_tokens, notifications
 
-### Frontend — Three standalone HTML pages with inline `<script>`
+### Frontend — React app + standalone HTML pages
 
-All pages embed their JavaScript inline. The external files `script.js`, `viewer.js`, and `positioner.js` still exist on disk but are **not referenced by any HTML page** — kept as historical reference only.
+**React app (panneau de contrôle) :** `client/` → buildé en `dist/`. Le backend sert `dist/index.html` pour `/` et les assets depuis `dist/assets/`. Les fichiers legacy (`index.html`, `script.js`, `viewer.js`, `positioner.js`) ont été supprimés lors de la migration.
 
-- **`index.html`** — Unified control panel (admin + client). Role-based visibility: admin sees all tabs, client sees only their own avatar. Frame upload/reorder/delete, audio config, voice channel control, fingerprint recording, viewer URL generator. New tabs: Sessions (create/invite/end), Subscriptions (tier info, admin management, streamer seats), App Tokens (list/revoke), Notification bell with real-time dropdown.
+**Pages HTML standalone (non migrées — usage OBS) :**
 - **`viewer.html`** — OBS browser source. Uses WebSocket (fallback: HTTP poll), renders flipbook animation with auto-blink. Emotion detection handled server-side with hysteresis. Query params: `?t=token&poll=100&size=200px&debug=0`.
 - **`positioner.html`** — Frame position editor. Canvas-based drag + sliders, persists to localStorage, notifies viewer via BroadcastChannel.
 
@@ -96,7 +130,7 @@ A standalone Windows executable (`dist/pngtuber-bot.exe`) and self-contained ins
 ## Code Conventions
 
 - Functional style, no classes. Promise-based async/await.
-- Direct DOM manipulation on frontend (no framework).
+- Frontend: React 18 + Vite (no direct DOM manipulation). Legacy standalone pages (viewer, positioner) still use inline JS.
 - Comments and documentation are in **French**.
 - Security: path traversal prevention via `SAFE_STATE_KEY`/`SAFE_FILENAME` regex + `path.resolve()` + `startsWith()`, SVG rejection, one-way user ID hashing, body size limits (10 MB), config validation via `ALLOWED_CONFIG_KEYS` whitelist, rate limiting (upload 30/min, auth 10/min, device 5/min), security headers (X-Content-Type-Options, HSTS, Referrer-Policy), CORS origin validation, WebSocket origin check, `TRUST_PROXY` for safe IP extraction, app tokens limited to client role.
 - **Image sanitisation:** All uploads are re-encoded through `sharp` to WebP (stripping metadata and neutralising malicious payloads). This reprocessing *is* the primary sanitisation step — magic byte checks are a secondary guard.

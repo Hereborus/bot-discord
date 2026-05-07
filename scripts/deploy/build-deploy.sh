@@ -119,10 +119,16 @@ else
     COMMIT_TITLE=$(grep -m1 '.' "$CHANGES_FILE" | sed 's/^## //')
     [ -z "$COMMIT_TITLE" ] && { log_error "Message de commit vide."; exit 1; }
     log_info "Commit : $COMMIT_TITLE"
-    git add -A
-    git commit -m "$COMMIT_TITLE
-
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
+    # Add explicite des fichiers source seulement (jamais .env, data/, build outputs).
+    # Les fichiers ignores (.env, data/, dist/, node_modules/) sont deja filtres
+    # par .gitignore mais on reste defensif : `git add -u` ne touche que les
+    # fichiers DEJA tracked, et l'add explicite des nouveautes evite tout
+    # ajout accidentel d'un fichier sensible cree localement.
+    git add -u
+    git add -- '*.js' '*.jsx' '*.json' '*.md' '*.html' '*.css' '*.sh' \
+               'Dockerfile' 'docker-compose.yml' '.gitignore' '.env.example' \
+               'src/**' 'client/**' 'scripts/**' 'docs/**' 2>/dev/null || true
+    git commit -m "$COMMIT_TITLE"
     echo "" > "$CHANGES_FILE"
     log_success "Commit créé"
   fi

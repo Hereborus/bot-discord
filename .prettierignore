@@ -1,0 +1,12 @@
+node_modules
+client/node_modules
+dist
+data
+images
+meta
+package-lock.json
+client/package-lock.json
+pngtuber.db*
+*.min.js
+.git
+docs

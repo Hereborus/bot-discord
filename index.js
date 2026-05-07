@@ -46,11 +46,8 @@
  *       DISCORD_REDIRECT_URI, ADMIN_DISCORD_ID, CORS_ORIGINS, DATA_ROOT
  */
 
-import { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits, REST, Routes, SlashCommandBuilder } from "discord.js";
 import {
     joinVoiceChannel,
-    EndBehaviorType,
-    getVoiceConnection,
     VoiceConnectionStatus,
     entersState,
     generateDependencyReport,
@@ -59,74 +56,107 @@ import http from "http";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import prism from "prism-media";
 import dotenv from "dotenv";
-import fftPkg from "fft-js";
-import { exec, spawn } from "child_process";
+import { spawn } from "child_process";
 import { WebSocketServer } from "ws";
-import Database from "better-sqlite3";
 import sharp from "sharp";
 
-const { fft, util: fftUtil } = fftPkg;
+// ── Imports depuis src/ ──────────────────────────────────────────
+import { rateLimit } from './src/services/rateLimiter.js';
+import { tokenFor, uidFor } from './src/services/tokenService.js';
+import { TIER_LIMITS, getUserTier, loadTier, requirePremium } from './src/services/tierService.js';
+import {
+    sessions, oauthStates, AUTH_ENABLED,
+    parseCookies, getSession, createSession, setSessionCookie, getUserRole,
+    resolveAuth,
+} from './src/services/authService.js';
+import { userLevels, userFreqHistory, userBaseline, recordingSessions, AUDIO } from './src/services/audioService.js';
+import { saveVoiceState, loadVoiceState, getAutoReconnect, setAutoReconnect } from './src/services/voiceService.js';
+import { db } from './src/db/database.js';
+import { users as usersRepo, frames as framesRepo } from './src/db/repos/users.js';
+import { permissions as permissionsRepo, avatarPerms as avatarPermsRepo } from './src/db/repos/permissions.js';
+import { subscriptions as subscriptionsRepo, seats as seatsRepo } from './src/db/repos/subscriptions.js';
+import { psessions, participants, invitations as invitationsRepo } from './src/db/repos/sessions.js';
+import { appTokens as appTokensRepo, notifications as notificationsRepo } from './src/db/repos/appTokens.js';
+import { BASE_URL, getAllowedOrigins, corsHeaders, securityHeaders } from './src/http/cors.js';
+import { json, serveFile, readBody, parseJsonBody, escapeHtml, MAX_BODY_SIZE } from './src/http/helpers.js';
+import { route, matchRoute } from './src/http/router.js';
+import { requireAuth, requireAdmin, requireClientOrAdmin } from './src/http/middleware.js';
+import { handleAuthLogin, handleAuthCallback, handleAuthLogout, handleAuthMe, handleTestMode } from './src/routes/auth.js';
+import {
+    handleGuilds, handleGuildChannels, handleGuildMembers,
+    handleVoiceJoin, handleVoiceDisconnect, handleVoiceStatus,
+    handleFollowStatus, handleVoiceFollow, handleVoiceUnfollow,
+    handleGetAutoReconnect, handleSetAutoReconnect,
+} from './src/routes/voice.js';
+import {
+    deviceAuthRequests,
+    handleDeviceAuthorize, handleDevicePoll,
+    handleDeviceVerifyPage, handleDeviceVerifySubmit,
+    handleListAppTokens, handleRevokeAppToken,
+} from './src/routes/device.js';
+import { client, initBot, loginBot } from './src/bot/discord.js';
+import {
+    handleGetUserConfig, handlePostUserConfig,
+    handleKnownUsers, handleBotToken,
+    validateUserConfig, ALLOWED_CONFIG_KEYS,
+} from './src/routes/config.js';
+import {
+    handleGetPermissions, handleSetPermission, handleDeletePermission,
+    handleGetMyPermissions, handleMyToken,
+    handleGetAvatarPerms, handleSetAvatarPerm, isAvatarAllowed as isAvatarAllowedFromModule,
+} from './src/routes/permissions.js';
+import {
+    handleUpload, handleReorder, handleDeleteFrame, handleMoveFrame,
+} from './src/routes/upload.js';
+import {
+    manualEmotion, setManualEmotion,
+    handleGetEmotion, handleSetEmotion,
+} from './src/routes/emotion.js';
+import {
+    computeFreqBands, subscribeUser,
+    loadBaselineFromConfig, startBaselinePersistence,
+    invalidateFingerprintCache as invalidateAudioFpCache,
+    getVoiceStats,
+} from './src/bot/audio.js';
+import { registerCalibrationRoutes } from './src/routes/calibration.js';
+
 const SOURCE_ROOT = process.cwd();
 const STATIC_ROOT = SOURCE_ROOT;
 const DATA_ROOT = process.env.DATA_ROOT || SOURCE_ROOT;
 
-// ── Validation magic bytes pour images ──────────────────────────
-const IMAGE_SIGNATURES = {
-    '.png':  [Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])],
-    '.jpg':  [Buffer.from([0xFF, 0xD8, 0xFF])],
-    '.jpeg': [Buffer.from([0xFF, 0xD8, 0xFF])],
-    '.gif':  [Buffer.from('GIF87a'), Buffer.from('GIF89a')],
-    '.webp': [Buffer.from('RIFF')], // + WEBP à offset 8
-};
-function validateMagicBytes(buffer, ext) {
-    const sigs = IMAGE_SIGNATURES[ext];
-    if (!sigs) return false;
-    for (const sig of sigs) {
-        if (buffer.length >= sig.length && buffer.subarray(0, sig.length).equals(sig)) {
-            // Vérification supplémentaire WebP: "WEBP" à offset 8
-            if (ext === '.webp') return buffer.length >= 12 && buffer.subarray(8, 12).equals(Buffer.from('WEBP'));
-            return true;
-        }
-    }
-    return false;
-}
-
 // ── Validation stateKey / noms de fichier ───────────────────────
+// POURQUOI CES REGEX ?
+// Protection contre les attaques de "path traversal" (traversée de répertoire).
+// Sans validation, un attaquant pourrait envoyer stateKey = "../../etc/passwd"
+// pour lire ou écraser des fichiers système. On autorise uniquement les
+// caractères alphanumériques, tirets et underscores — rien qui puisse former
+// un chemin relatif. La validation est complétée par path.resolve() + startsWith()
+// plus bas pour une double protection.
 const SAFE_STATE_KEY = /^[a-zA-Z0-9_-]{1,64}$/;
 const SAFE_FILENAME = /^[a-zA-Z0-9._-]{1,255}$/;
 
 // ── Trusted proxy — ne lire X-Forwarded-For que si un reverse proxy est configuré ──
+// POURQUOI TRUST_PROXY ?
+// Derrière un reverse proxy (Nginx, Traefik, Pangolin…) l'IP visible par Node
+// est toujours l'IP du proxy (ex: 127.0.0.1), pas celle du client réel.
+// Le proxy transmet la vraie IP dans l'en-tête "X-Forwarded-For".
+// DANGER : si on lit cet en-tête sans vérification, n'importe quel client peut
+// forger "X-Forwarded-For: 1.2.3.4" pour usurper une IP et contourner le rate limit.
+// Solution : n'activer la lecture de X-Forwarded-For que si TRUST_PROXY=true,
+// c'est-à-dire quand on sait qu'un proxy de confiance est en frontal.
 const TRUST_PROXY = process.env.TRUST_PROXY === 'true' || process.env.TRUST_PROXY === '1';
 
 function getClientIp(req) {
     if (TRUST_PROXY) {
         const xff = req.headers['x-forwarded-for'];
+        // X-Forwarded-For peut contenir plusieurs IPs séparées par des virgules
+        // (chaîne de proxies). On prend la première, qui est le client original.
         if (xff) return xff.split(',')[0].trim();
     }
     return req.socket?.remoteAddress || 'unknown';
 }
 
-// ── Rate limiter simple en mémoire ──────────────────────────────
-const rateLimitBuckets = new Map(); // key → { count, resetAt }
-function rateLimit(key, maxRequests, windowMs) {
-    const now = Date.now();
-    let bucket = rateLimitBuckets.get(key);
-    if (!bucket || now > bucket.resetAt) {
-        bucket = { count: 0, resetAt: now + windowMs };
-        rateLimitBuckets.set(key, bucket);
-    }
-    bucket.count++;
-    return bucket.count > maxRequests;
-}
-// Nettoyage périodique des buckets expirés (toutes les 60s)
-setInterval(() => {
-    const now = Date.now();
-    for (const [key, bucket] of rateLimitBuckets) {
-        if (now > bucket.resetAt) rateLimitBuckets.delete(key);
-    }
-}, 60_000);
 const IMAGES_DIR = path.join(DATA_ROOT, "images");
 const META_DIR = path.join(DATA_ROOT, "meta");
 const ENV_PATH = path.join(DATA_ROOT, ".env");
@@ -135,272 +165,85 @@ if (!fs.existsSync(DATA_ROOT)) fs.mkdirSync(DATA_ROOT, { recursive: true });
 if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
 if (!fs.existsSync(META_DIR)) fs.mkdirSync(META_DIR, { recursive: true });
 
-// ── Auto-reconnect state file ──
-const VOICE_STATE_PATH = path.join(DATA_ROOT, "voice-state.json");
-
-function saveVoiceState() {
-    const state = {
-        autoReconnect: getAutoReconnect(),
-        guildId: connectedGuildId,
-        channelId: connectedChannelId,
-    };
-    try { fs.writeFileSync(VOICE_STATE_PATH, JSON.stringify(state)); } catch {}
-}
-
-function loadVoiceState() {
-    try {
-        if (fs.existsSync(VOICE_STATE_PATH)) return JSON.parse(fs.readFileSync(VOICE_STATE_PATH, "utf-8"));
-    } catch {}
-    return { autoReconnect: false, guildId: null, channelId: null };
-}
-
-function getAutoReconnect() {
-    return loadVoiceState().autoReconnect ?? false;
-}
-
-function setAutoReconnect(val) {
-    const state = loadVoiceState();
-    state.autoReconnect = !!val;
-    try { fs.writeFileSync(VOICE_STATE_PATH, JSON.stringify(state)); } catch {}
-}
-
 // ── Mode suivi (follow) — le bot suit un utilisateur entre les canaux vocaux ──
 let followTarget = null; // { discordId, requestedBy, displayName }
 let followError = null; // { channelName, userName, ts } — erreur de suivi récente
 
-// ════════════════════════════════════════════════════════════════
-// SQLITE DATABASE — remplace les fichiers JSON meta/config/permissions
-// ════════════════════════════════════════════════════════════════
-const DB_PATH = path.join(DATA_ROOT, "pngtuber.db");
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
-
-db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-        token        TEXT PRIMARY KEY,
-        display_name TEXT DEFAULT '???',
-        config_json  TEXT DEFAULT '{}',
-        created_at   TEXT DEFAULT (datetime('now')),
-        updated_at   TEXT DEFAULT (datetime('now'))
-    );
-    CREATE TABLE IF NOT EXISTS frames (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        token        TEXT NOT NULL,
-        state_key    TEXT NOT NULL,
-        filename     TEXT NOT NULL,
-        sort_order   INTEGER NOT NULL DEFAULT 0,
-        original_ext TEXT,
-        file_size    INTEGER DEFAULT 0,
-        created_at   TEXT DEFAULT (datetime('now')),
-        UNIQUE(token, state_key, filename)
-    );
-    CREATE INDEX IF NOT EXISTS idx_frames_token_state ON frames(token, state_key);
-    CREATE TABLE IF NOT EXISTS permissions (
-        discord_id   TEXT PRIMARY KEY,
-        role         TEXT NOT NULL DEFAULT 'viewer',
-        granted_by   TEXT,
-        granted_at   TEXT DEFAULT (datetime('now')),
-        display_name TEXT DEFAULT 'Unknown',
-        guilds_json  TEXT DEFAULT '[]'
-    );
-    CREATE TABLE IF NOT EXISTS avatar_permissions (
-        token        TEXT NOT NULL,
-        guild_id     TEXT NOT NULL,
-        allowed      INTEGER NOT NULL DEFAULT 0,
-        updated_at   TEXT DEFAULT (datetime('now')),
-        PRIMARY KEY(token, guild_id)
-    );
-
-    -- ── Premium / Abonnements ──
-    CREATE TABLE IF NOT EXISTS subscriptions (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        discord_id      TEXT NOT NULL UNIQUE,
-        tier            TEXT NOT NULL DEFAULT 'free',
-        status          TEXT NOT NULL DEFAULT 'active',
-        max_seats       INTEGER NOT NULL DEFAULT 1,
-        stripe_sub_id   TEXT,
-        started_at      TEXT DEFAULT (datetime('now')),
-        expires_at      TEXT,
-        created_at      TEXT DEFAULT (datetime('now')),
-        updated_at      TEXT DEFAULT (datetime('now'))
-    );
-    CREATE TABLE IF NOT EXISTS subscription_seats (
-        subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
-        discord_id      TEXT NOT NULL,
-        added_at        TEXT DEFAULT (datetime('now')),
-        UNIQUE(subscription_id, discord_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_seats_sub ON subscription_seats(subscription_id);
-    CREATE INDEX IF NOT EXISTS idx_seats_user ON subscription_seats(discord_id);
-
-    -- ── Sessions PNGTuber (collaboratives) ──
-    CREATE TABLE IF NOT EXISTS pngtuber_sessions (
-        id                TEXT PRIMARY KEY,
-        owner_discord_id  TEXT NOT NULL,
-        name              TEXT DEFAULT 'Session',
-        type              TEXT NOT NULL DEFAULT 'voice',
-        guild_id          TEXT,
-        channel_id        TEXT,
-        status            TEXT NOT NULL DEFAULT 'active',
-        max_participants  INTEGER DEFAULT 10,
-        created_at        TEXT DEFAULT (datetime('now')),
-        ended_at          TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_psessions_owner ON pngtuber_sessions(owner_discord_id);
-    CREATE INDEX IF NOT EXISTS idx_psessions_guild ON pngtuber_sessions(guild_id, channel_id);
-    CREATE TABLE IF NOT EXISTS session_participants (
-        session_id  TEXT NOT NULL REFERENCES pngtuber_sessions(id) ON DELETE CASCADE,
-        discord_id  TEXT NOT NULL,
-        token       TEXT NOT NULL,
-        role        TEXT NOT NULL DEFAULT 'participant',
-        joined_at   TEXT DEFAULT (datetime('now')),
-        left_at     TEXT,
-        PRIMARY KEY(session_id, discord_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_sparticipants_user ON session_participants(discord_id);
-
-    -- ── Invitations ──
-    CREATE TABLE IF NOT EXISTS invitations (
-        id                  TEXT PRIMARY KEY,
-        session_id          TEXT NOT NULL REFERENCES pngtuber_sessions(id) ON DELETE CASCADE,
-        invited_by          TEXT NOT NULL,
-        invited_discord_id  TEXT,
-        status              TEXT NOT NULL DEFAULT 'pending',
-        max_uses            INTEGER DEFAULT 1,
-        use_count           INTEGER DEFAULT 0,
-        stream_name         TEXT,
-        expires_at          TEXT,
-        created_at          TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_invitations_session ON invitations(session_id);
-    CREATE INDEX IF NOT EXISTS idx_invitations_invited ON invitations(invited_discord_id);
-
-    -- ── App Tokens (Device Auth) ──
-    CREATE TABLE IF NOT EXISTS app_tokens (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        token_hash   TEXT NOT NULL UNIQUE,
-        discord_id   TEXT NOT NULL,
-        device_name  TEXT DEFAULT 'Agent',
-        last_used_at TEXT,
-        revoked_at   TEXT,
-        created_at   TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_app_tokens_discord ON app_tokens(discord_id);
-
-    -- ── Notifications ──
-    CREATE TABLE IF NOT EXISTS notifications (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        discord_id   TEXT NOT NULL,
-        type         TEXT NOT NULL,
-        payload_json TEXT NOT NULL DEFAULT '{}',
-        read         INTEGER NOT NULL DEFAULT 0,
-        created_at   TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(discord_id, read);
-`);
-
-// Prepared statements (compilés une seule fois, réutilisés)
+// ── Aliases stmts → repos src/ ──────────────────────────────────
+// db, repos et schema sont initialisés par src/db/database.js et ses repos.
+// On crée des aliases compatibles avec le code existant de index.js.
 const stmts = {
-    getUser:          db.prepare("SELECT * FROM users WHERE token = ?"),
-    upsertUser:       db.prepare(`INSERT INTO users (token, display_name, config_json, updated_at)
-                                  VALUES (?, ?, ?, datetime('now'))
-                                  ON CONFLICT(token) DO UPDATE SET
-                                      display_name = excluded.display_name,
-                                      config_json  = excluded.config_json,
-                                      updated_at   = datetime('now')`),
-    getUserConfig:    db.prepare("SELECT config_json FROM users WHERE token = ?"),
-    setUserConfig:    db.prepare("UPDATE users SET config_json = ?, updated_at = datetime('now') WHERE token = ?"),
-    getFrames:        db.prepare("SELECT filename, state_key, sort_order FROM frames WHERE token = ? ORDER BY state_key, sort_order"),
-    getFramesByState: db.prepare("SELECT filename FROM frames WHERE token = ? AND state_key = ? ORDER BY sort_order"),
-    insertFrame:      db.prepare("INSERT OR IGNORE INTO frames (token, state_key, filename, sort_order, original_ext, file_size) VALUES (?, ?, ?, ?, ?, ?)"),
-    deleteFrame:      db.prepare("DELETE FROM frames WHERE token = ? AND state_key = ? AND filename = ?"),
-    deleteUserFrames: db.prepare("DELETE FROM frames WHERE token = ?"),
-    deleteUser:       db.prepare("DELETE FROM users WHERE token = ?"),
-    updateFrameOrder: db.prepare("UPDATE frames SET sort_order = ? WHERE token = ? AND state_key = ? AND filename = ?"),
-    maxSortOrder:     db.prepare("SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM frames WHERE token = ? AND state_key = ?"),
-    allUsers:         db.prepare("SELECT token, display_name, config_json FROM users"),
-    moveFrame:        db.prepare("UPDATE frames SET state_key = ? WHERE token = ? AND state_key = ? AND filename = ?"),
+    getUser:             usersRepo.get,
+    upsertUser:          usersRepo.upsert,
+    getUserConfig:       usersRepo.getConfig,
+    setUserConfig:       usersRepo.setConfig,
+    getFrames:           framesRepo.byToken,
+    getFramesByState:    framesRepo.byState,
+    insertFrame:         framesRepo.insert,
+    deleteFrame:         framesRepo.delete,
+    deleteUserFrames:    framesRepo.deleteAll,
+    deleteUser:          db.prepare("DELETE FROM users WHERE token = ?"),
+    updateFrameOrder:    framesRepo.updateOrder,
+    maxSortOrder:        framesRepo.maxOrder,
+    allUsers:            usersRepo.all,
+    moveFrame:           framesRepo.move,
     // DB browser
-    dbStats:          db.prepare("SELECT (SELECT COUNT(*) FROM users) AS user_count, (SELECT COUNT(*) FROM frames) AS frame_count, (SELECT COALESCE(SUM(file_size),0) FROM frames) AS total_size"),
-    dbAllFrames:      db.prepare("SELECT f.token, f.state_key, f.filename, f.original_ext, f.file_size, f.created_at, u.display_name FROM frames f LEFT JOIN users u ON f.token = u.token ORDER BY f.token, f.state_key, f.sort_order"),
+    dbStats:             framesRepo.stats,
+    dbAllFrames:         framesRepo.allForAdmin,
     // Permissions
-    getPermission:    db.prepare("SELECT * FROM permissions WHERE discord_id = ?"),
-    upsertPermission: db.prepare(`INSERT INTO permissions (discord_id, role, granted_by, display_name, guilds_json)
-                                  VALUES (?, ?, ?, ?, ?)
-                                  ON CONFLICT(discord_id) DO UPDATE SET
-                                      role = excluded.role, granted_by = excluded.granted_by,
-                                      display_name = excluded.display_name, guilds_json = excluded.guilds_json,
-                                      granted_at = datetime('now')`),
-    deletePermission: db.prepare("DELETE FROM permissions WHERE discord_id = ?"),
-    allPermissions:   db.prepare("SELECT * FROM permissions"),
+    getPermission:       permissionsRepo.get,
+    upsertPermission:    permissionsRepo.upsert,
+    deletePermission:    permissionsRepo.delete,
+    allPermissions:      permissionsRepo.all,
     // Avatar permissions per server
-    getAvatarPerms:      db.prepare("SELECT guild_id, allowed FROM avatar_permissions WHERE token = ?"),
-    getAvatarPerm:       db.prepare("SELECT allowed FROM avatar_permissions WHERE token = ? AND guild_id = ?"),
-    upsertAvatarPerm:    db.prepare(`INSERT INTO avatar_permissions (token, guild_id, allowed, updated_at)
-                                     VALUES (?, ?, ?, datetime('now'))
-                                     ON CONFLICT(token, guild_id) DO UPDATE SET
-                                         allowed = excluded.allowed, updated_at = datetime('now')`),
+    getAvatarPerms:      avatarPermsRepo.byToken,
+    getAvatarPerm:       avatarPermsRepo.get,
+    upsertAvatarPerm:    avatarPermsRepo.upsert,
     // ── Subscriptions ──
-    getSubscription:     db.prepare("SELECT * FROM subscriptions WHERE discord_id = ? AND status = 'active'"),
-    getSubscriptionById: db.prepare("SELECT * FROM subscriptions WHERE id = ?"),
-    upsertSubscription:  db.prepare(`INSERT INTO subscriptions (discord_id, tier, status, max_seats, expires_at, updated_at)
-                                     VALUES (?, ?, 'active', ?, ?, datetime('now'))
-                                     ON CONFLICT(discord_id) DO UPDATE SET
-                                         tier = excluded.tier, status = 'active',
-                                         max_seats = excluded.max_seats, expires_at = excluded.expires_at,
-                                         updated_at = datetime('now')`),
-    cancelSubscription:  db.prepare("UPDATE subscriptions SET status = 'cancelled', updated_at = datetime('now') WHERE discord_id = ?"),
-    expireSubscriptions: db.prepare("UPDATE subscriptions SET status = 'expired', updated_at = datetime('now') WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at < datetime('now')"),
+    getSubscription:     subscriptionsRepo.get,
+    getSubscriptionById: subscriptionsRepo.getById,
+    upsertSubscription:  subscriptionsRepo.upsert,
+    cancelSubscription:  subscriptionsRepo.cancel,
+    expireSubscriptions: subscriptionsRepo.expire,
     // ── Seats ──
-    getSeatByUser:       db.prepare(`SELECT ss.*, s.discord_id AS owner_discord_id, s.tier, s.status AS sub_status
-                                     FROM subscription_seats ss JOIN subscriptions s ON ss.subscription_id = s.id
-                                     WHERE ss.discord_id = ? AND s.status = 'active'`),
-    getSeatsBySub:       db.prepare("SELECT * FROM subscription_seats WHERE subscription_id = ?"),
-    countSeatsBySub:     db.prepare("SELECT COUNT(*) AS cnt FROM subscription_seats WHERE subscription_id = ?"),
-    addSeat:             db.prepare("INSERT OR IGNORE INTO subscription_seats (subscription_id, discord_id) VALUES (?, ?)"),
-    removeSeat:          db.prepare("DELETE FROM subscription_seats WHERE subscription_id = ? AND discord_id = ?"),
+    getSeatByUser:       seatsRepo.byUser,
+    getSeatsBySub:       seatsRepo.bySub,
+    countSeatsBySub:     seatsRepo.count,
+    addSeat:             seatsRepo.add,
+    removeSeat:          seatsRepo.remove,
     // ── Sessions PNGTuber ──
-    createPSession:      db.prepare("INSERT INTO pngtuber_sessions (id, owner_discord_id, name, type, guild_id, channel_id, status, max_participants) VALUES (?, ?, ?, ?, ?, ?, 'active', ?)"),
-    getPSession:         db.prepare("SELECT * FROM pngtuber_sessions WHERE id = ?"),
-    endPSession:         db.prepare("UPDATE pngtuber_sessions SET status = 'ended', ended_at = datetime('now') WHERE id = ?"),
-    getActiveVoiceSession: db.prepare("SELECT * FROM pngtuber_sessions WHERE guild_id = ? AND channel_id = ? AND status = 'active' LIMIT 1"),
-    getUserPSessions:    db.prepare(`SELECT DISTINCT s.* FROM pngtuber_sessions s
-                                     LEFT JOIN session_participants sp ON s.id = sp.session_id
-                                     WHERE (s.owner_discord_id = ? OR (sp.discord_id = ? AND sp.left_at IS NULL))
-                                     AND s.status = 'active' ORDER BY s.created_at DESC`),
+    createPSession:      psessions.create,
+    getPSession:         psessions.get,
+    endPSession:         psessions.end,
+    getActiveVoiceSession: psessions.activeVoice,
+    getUserPSessions:    psessions.byUser,
     // ── Participants ──
-    addParticipant:      db.prepare("INSERT OR IGNORE INTO session_participants (session_id, discord_id, token, role) VALUES (?, ?, ?, ?)"),
-    removeParticipant:   db.prepare("UPDATE session_participants SET left_at = datetime('now') WHERE session_id = ? AND discord_id = ? AND left_at IS NULL"),
-    getParticipants:     db.prepare("SELECT * FROM session_participants WHERE session_id = ? AND left_at IS NULL"),
-    isParticipant:       db.prepare("SELECT 1 FROM session_participants WHERE session_id = ? AND discord_id = ? AND left_at IS NULL"),
+    addParticipant:      participants.add,
+    removeParticipant:   participants.remove,
+    getParticipants:     participants.list,
+    isParticipant:       participants.check,
     // ── Invitations ──
-    createInvitation:    db.prepare("INSERT INTO invitations (id, session_id, invited_by, invited_discord_id, max_uses, stream_name, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
-    getInvitation:       db.prepare("SELECT i.*, s.name AS session_name, s.owner_discord_id FROM invitations i JOIN pngtuber_sessions s ON i.session_id = s.id WHERE i.id = ?"),
-    updateInvitationStatus: db.prepare("UPDATE invitations SET status = ? WHERE id = ?"),
-    incrementInviteUse:  db.prepare("UPDATE invitations SET use_count = use_count + 1 WHERE id = ?"),
-    getPendingInvitations: db.prepare(`SELECT i.*, s.name AS session_name FROM invitations i
-                                       JOIN pngtuber_sessions s ON i.session_id = s.id
-                                       WHERE i.invited_discord_id = ? AND i.status = 'pending'
-                                       ORDER BY i.created_at DESC`),
-    getSessionInvitations: db.prepare("SELECT * FROM invitations WHERE session_id = ? ORDER BY created_at DESC"),
+    createInvitation:    invitationsRepo.create,
+    getInvitation:       invitationsRepo.get,
+    updateInvitationStatus: invitationsRepo.updateStatus,
+    incrementInviteUse:  invitationsRepo.incrementUse,
+    getPendingInvitations: invitationsRepo.pending,
+    getSessionInvitations: invitationsRepo.bySession,
     // ── App Tokens ──
-    createAppToken:      db.prepare("INSERT INTO app_tokens (token_hash, discord_id, device_name) VALUES (?, ?, ?)"),
-    getAppToken:         db.prepare("SELECT * FROM app_tokens WHERE token_hash = ? AND revoked_at IS NULL"),
-    getAppTokensByUser:  db.prepare("SELECT id, device_name, last_used_at, created_at FROM app_tokens WHERE discord_id = ? AND revoked_at IS NULL"),
-    revokeAppToken:      db.prepare("UPDATE app_tokens SET revoked_at = datetime('now') WHERE id = ? AND discord_id = ?"),
-    touchAppToken:       db.prepare("UPDATE app_tokens SET last_used_at = datetime('now') WHERE token_hash = ?"),
-    deleteAppTokensByUser: db.prepare("UPDATE app_tokens SET revoked_at = datetime('now') WHERE discord_id = ?"),
+    createAppToken:      appTokensRepo.create,
+    getAppToken:         appTokensRepo.get,
+    getAppTokensByUser:  appTokensRepo.byUser,
+    revokeAppToken:      appTokensRepo.revoke,
+    touchAppToken:       appTokensRepo.touch,
+    deleteAppTokensByUser: appTokensRepo.revokeAll,
     // ── Notifications ──
-    createNotification:  db.prepare("INSERT INTO notifications (discord_id, type, payload_json) VALUES (?, ?, ?)"),
-    getNotifications:    db.prepare("SELECT * FROM notifications WHERE discord_id = ? ORDER BY created_at DESC LIMIT ?"),
-    getUnreadNotifications: db.prepare("SELECT * FROM notifications WHERE discord_id = ? AND read = 0 ORDER BY created_at DESC LIMIT ?"),
-    countUnreadNotifs:   db.prepare("SELECT COUNT(*) AS cnt FROM notifications WHERE discord_id = ? AND read = 0"),
-    markNotifRead:       db.prepare("UPDATE notifications SET read = 1 WHERE id = ? AND discord_id = ?"),
-    markAllNotifsRead:   db.prepare("UPDATE notifications SET read = 1 WHERE discord_id = ? AND read = 0"),
+    createNotification:  notificationsRepo.create,
+    getNotifications:    notificationsRepo.list,
+    getUnreadNotifications: notificationsRepo.unread,
+    countUnreadNotifs:   notificationsRepo.countUnread,
+    markNotifRead:       notificationsRepo.markRead,
+    markAllNotifsRead:   notificationsRepo.markAllRead,
 };
-
-console.log("✓ SQLite initialisé:", DB_PATH);
 
 // ════════════════════════════════════════════════════════════════
 // .ENV — généré automatiquement au premier lancement si absent
@@ -449,61 +292,20 @@ ensureEnvKey("SESSION_SECRET", crypto.randomBytes(32).toString("hex"));
 
 dotenv.config({ path: ENV_PATH });
 
-// ════════════════════════════════════════════════════════════════
-// SYSTÈME DE TOKEN — userId Discord → token opaque 16 hex
-// HMAC-SHA256(userId, SECRET) — non-réversible sans la clé secrète
-// ════════════════════════════════════════════════════════════════
-const HASH_SECRET = process.env.USER_HASH_SECRET;
-
-// hash stable du userId — utilisé pour nommer les fichiers sur disque
 function hashUid(userId) {
-    return crypto
-        .createHmac("sha256", HASH_SECRET)
-        .update(String(userId))
-        .digest("hex")
-        .slice(0, 16);
+    // Fallback interne — utilisé dans migrateExistingData et writeCfg
+    return tokenFor(userId);
 }
 
-// Maps en mémoire — le userId Discord ne sort jamais de ce processus
-const tokenToUid = new Map(); // token → userId
-const uidToToken = new Map(); // userId → token
-
-function tokenFor(userId) {
-    // On garde une table en mémoire pour éviter de recalculer le token partout.
-    // Le token est déterministe: même userId => même token (avec le même secret).
-    if (uidToToken.has(userId)) return uidToToken.get(userId);
-    const token = hashUid(userId);
-    tokenToUid.set(token, userId);
-    uidToToken.set(userId, token);
-    return token;
-}
-function uidFor(token) {
-    return tokenToUid.get(token) || null;
-}
 // Valide un token: en mémoire OU en base de données
 function isKnownToken(token) {
-    return tokenToUid.has(token) || !!stmts.getUser.get(token);
+    return !!uidFor(token) || !!stmts.getUser.get(token);
 }
 // Chemin dossier état par token (sans besoin du userId)
 function stateDirByToken(token, sk) {
     return path.join(IMAGES_DIR, token, sk);
 }
 
-// ════════════════════════════════════════════════════════════════
-// AUDIO CONFIG
-// ════════════════════════════════════════════════════════════════
-const AUDIO = {
-    sampleRate: 48000,
-    sampleInterval: 50,
-    durationWindow: 100,
-    fftSize: 1024,
-    freqBands: {
-        low: { min: 20, max: 500 },
-        mid: { min: 500, max: 2000 },
-        high: { min: 2000, max: 10000 },
-    },
-};
-const userLevels = new Map();
 // Viewer sessions: sessionId → { userToken, createdAt } — persisté sur disque
 const VIEWER_SESSIONS_PATH = path.join(DATA_ROOT, "viewer-sessions.json");
 const viewerSessions = new Map();
@@ -538,137 +340,14 @@ let isShuttingDown = false;
 // ════════════════════════════════════════════════════════════════
 // UTILITAIRES HTTP
 // ════════════════════════════════════════════════════════════════
-const MIME = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "application/javascript",
-    ".css": "text/css",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".svg": "image/svg+xml",
-    ".ico": "image/x-icon",
-    ".json": "application/json",
-};
-
-// ── URL publique (reverse proxy ou local) ───────────────────────
-const BASE_URL = (() => {
-    if (process.env.BASE_URL) return process.env.BASE_URL.replace(/\/+$/, '');
-    if (process.env.DISCORD_REDIRECT_URI) {
-        try { return new URL(process.env.DISCORD_REDIRECT_URI).origin; } catch {}
-    }
-    return `http://localhost:${PORT}`;
-})();
-
-// ── CORS dynamique ──────────────────────────────────────────────
-function getAllowedOrigins() {
-    const origins = new Set([
-        `http://localhost:${PORT}`,
-        `http://127.0.0.1:${PORT}`,
-        BASE_URL,
-    ]);
-    if (process.env.CORS_ORIGINS) {
-        for (const o of process.env.CORS_ORIGINS.split(',')) origins.add(o.trim());
-    }
-    return [...origins];
-}
-
-function corsHeaders(req) {
-    const origin = req?.headers?.origin || '';
-    const allowed = getAllowedOrigins();
-    const headers = {
-        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Allow-Credentials": "true",
-    };
-    if (origin && allowed.includes(origin)) {
-        headers["Access-Control-Allow-Origin"] = origin;
-    } else if (!origin) {
-        // Pas d'origin → requête same-origin ou outil CLI, pas de credentials
-        headers["Access-Control-Allow-Origin"] = "*";
-        delete headers["Access-Control-Allow-Credentials"];
-    }
-    return headers;
-}
-
-// ── Headers de sécurité communs ──────────────────────────────────
-function securityHeaders(extra = {}) {
-    const isHttps = BASE_URL.startsWith('https://');
-    const h = {
-        "X-Content-Type-Options": "nosniff",
-        "X-XSS-Protection": "1; mode=block",
-        "Referrer-Policy": "strict-origin-when-cross-origin",
-        ...extra,
-    };
-    if (isHttps) h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
-    return h;
-}
-
-function serveFile(res, filePath, req = null) {
-    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile())
-        return false;
-    const ext = path.extname(filePath).toLowerCase();
-    const headers = {
-        "Content-Type": MIME[ext] || "application/octet-stream",
-        ...corsHeaders(req),
-        ...securityHeaders(),
-    };
-    // Pas de cache sur les fichiers HTML (toujours servir la dernière version)
-    if (ext === '.html' || ext === '.css') {
-        headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
-        headers["Pragma"] = "no-cache";
-    }
-    // SVG servis comme images statiques : empêcher exécution JS
-    if (ext === '.svg') {
-        headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'";
-        headers["Content-Disposition"] = "inline";
-    }
-    res.writeHead(200, headers);
-    fs.createReadStream(filePath).pipe(res);
-    return true;
-}
-function json(res, data, status = 200, req = null) {
-    res.writeHead(status, { "Content-Type": "application/json", ...corsHeaders(req), ...securityHeaders() });
-    res.end(JSON.stringify(data));
-}
-
-// ── Échapper HTML pour les messages d'erreur ─────────────────────
-function escapeHtml(str) {
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 Mo
-
-function readBody(req, maxSize = MAX_BODY_SIZE) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        let size = 0;
-        req.on("data", (chunk) => {
-            size += chunk.length;
-            if (size > maxSize) {
-                req.destroy();
-                reject(new Error("Corps de requête trop volumineux"));
-                return;
-            }
-            chunks.push(chunk);
-        });
-        req.on("end", () => resolve(Buffer.concat(chunks)));
-        req.on("error", reject);
-    });
-}
-
-async function parseJsonBody(req) {
-    const raw = await readBody(req);
-    return JSON.parse(raw.toString());
-}
 
 function openDefaultBrowser(url) {
     if (process.env.PNGTUBER_NO_BROWSER === "1") return;
     // Utiliser spawn avec tableau d'arguments (pas de shell injection possible)
     let cmd, args;
     if (process.platform === "win32") {
-        cmd = "cmd"; args = ["/c", "start", "", url];
+        // explorer.exe : ouvre une seule tab sans fenêtre cmd parasite
+        cmd = "explorer"; args = [url];
     } else if (process.platform === "darwin") {
         cmd = "open"; args = [url];
     } else {
@@ -704,25 +383,10 @@ function writeCfg(userId, c) {
 // ════════════════════════════════════════════════════════════════
 // PERMISSIONS — rôles utilisateur (admin / client / viewer) via SQLite
 // ════════════════════════════════════════════════════════════════
-function loadPermissions() {
-    const rows = stmts.allPermissions.all();
-    const users = {};
-    for (const r of rows) {
-        users[r.discord_id] = {
-            role: r.role,
-            grantedBy: r.granted_by,
-            grantedAt: r.granted_at,
-            displayName: r.display_name,
-            guilds: JSON.parse(r.guilds_json || "[]"),
-        };
-    }
-    return { version: 1, users };
-}
-
-function getUserRole(discordId) {
-    const row = stmts.getPermission.get(discordId);
-    return row?.role || "viewer";
-}
+// getUserRole importé depuis src/services/authService.js
+// loadPermissions, handleGetPermissions, handleSetPermission, handleDeletePermission,
+// handleGetMyPermissions, handleMyToken, handleGetAvatarPerms, handleSetAvatarPerm,
+// isAvatarAllowed → src/routes/permissions.js
 
 function getFrames(userId) {
     const token = tokenFor(userId);
@@ -744,198 +408,22 @@ function getFramesByToken(token) {
 // ════════════════════════════════════════════════════════════════
 // VALIDATION CONFIG UTILISATEUR
 // ════════════════════════════════════════════════════════════════
-const ALLOWED_CONFIG_KEYS = ['displayName', 'thresholds', 'emotionHoldMs', 'frameSpeed', 'emotions', 'blinkSettings', 'calibration', 'emotionFingerprints', 'emotionHotkeys'];
-
-function validateUserConfig(cfg) {
-    if (typeof cfg !== 'object' || cfg === null || Array.isArray(cfg)) return false;
-    for (const key of Object.keys(cfg)) {
-        if (!ALLOWED_CONFIG_KEYS.includes(key)) return false;
-    }
-    if (cfg.displayName !== undefined && typeof cfg.displayName !== 'string') return false;
-    if (cfg.emotionHoldMs !== undefined && typeof cfg.emotionHoldMs !== 'number') return false;
-    if (cfg.frameSpeed !== undefined && typeof cfg.frameSpeed !== 'number') return false;
-    if (cfg.thresholds !== undefined && !Array.isArray(cfg.thresholds)) return false;
-    if (cfg.emotions !== undefined && !Array.isArray(cfg.emotions)) return false;
-    if (cfg.blinkSettings !== undefined) {
-        if (typeof cfg.blinkSettings !== 'object' || Array.isArray(cfg.blinkSettings)) return false;
-        for (const setting of Object.values(cfg.blinkSettings)) {
-            if (typeof setting !== 'object') return false;
-            if (setting.mode && !['blink', 'transition'].includes(setting.mode)) return false;
-            // Ancien format (rétrocompat)
-            if (setting.interval !== undefined && (typeof setting.interval !== 'number' || setting.interval < 500)) return false;
-            if (setting.duration !== undefined && (typeof setting.duration !== 'number' || setting.duration < 50)) return false;
-            // Nouveau format min/max
-            for (const k of ['intervalMin', 'intervalMax']) {
-                if (setting[k] !== undefined && (typeof setting[k] !== 'number' || setting[k] < 200)) return false;
-            }
-            for (const k of ['durationMin', 'durationMax']) {
-                if (setting[k] !== undefined && (typeof setting[k] !== 'number' || setting[k] < 50)) return false;
-            }
-        }
-    }
-    // Validation emotionHotkeys
-    if (cfg.emotionHotkeys !== undefined) {
-        if (!Array.isArray(cfg.emotionHotkeys)) return false;
-        for (const h of cfg.emotionHotkeys) {
-            if (typeof h !== 'object' || !h) return false;
-            if (typeof h.code !== 'string' || typeof h.emotion !== 'string') return false;
-            if (h.mode && h.mode !== 'toggle' && h.mode !== 'hold') return false;
-        }
-    }
-    // Validation emotionFingerprints
-    if (cfg.emotionFingerprints !== undefined) {
-        if (typeof cfg.emotionFingerprints !== 'object' || cfg.emotionFingerprints === null || Array.isArray(cfg.emotionFingerprints)) return false;
-        for (const fp of Object.values(cfg.emotionFingerprints)) {
-            if (typeof fp !== 'object' || fp === null) return false;
-            for (const val of Object.values(fp)) {
-                if (typeof val !== 'object' || val === null) return false;
-                if (typeof val.mean !== 'number' || typeof val.std !== 'number') return false;
-            }
-        }
-    }
-    // Validation calibration
-    if (cfg.calibration !== undefined) {
-        const cal = cfg.calibration;
-        if (typeof cal !== 'object' || cal === null || Array.isArray(cal)) return false;
-        for (const k of ['dbMean', 'dbStd', 'sampleCount']) {
-            if (cal[k] !== undefined && typeof cal[k] !== 'number') return false;
-        }
-        for (const k of ['freqMean', 'freqStd']) {
-            if (cal[k] !== undefined) {
-                if (typeof cal[k] !== 'object' || cal[k] === null) return false;
-                for (const band of ['low', 'mid', 'high']) {
-                    if (cal[k][band] !== undefined && typeof cal[k][band] !== 'number') return false;
-                }
-            }
-        }
-    }
-    return true;
-}
+// validateUserConfig, ALLOWED_CONFIG_KEYS → src/routes/config.js
+// TIER_LIMITS, getUserTier, loadTier, requirePremium importés depuis src/services/tierService.js
 
 // ════════════════════════════════════════════════════════════════
-// TIERS PREMIUM — limites et vérification
-// ════════════════════════════════════════════════════════════════
-const TIER_LIMITS = {
-    free: {
-        maxStates: 2, maxClosedStates: 2, maxFramesPerState: 3,
-        emotionsEnabled: false, hotkeysEnabled: false,
-        miniAppEnabled: false, calibrationEnabled: false,
-        maxSessionParticipants: 3,
-    },
-    premium: {
-        maxStates: Infinity, maxClosedStates: Infinity, maxFramesPerState: Infinity,
-        emotionsEnabled: true, hotkeysEnabled: true,
-        miniAppEnabled: true, calibrationEnabled: true,
-        maxSessionParticipants: 10,
-    },
-    streamer: {
-        maxStates: Infinity, maxClosedStates: Infinity, maxFramesPerState: Infinity,
-        emotionsEnabled: true, hotkeysEnabled: true,
-        miniAppEnabled: true, calibrationEnabled: true,
-        maxSessionParticipants: 20,
-    },
-};
-
-function getUserTier(discordId) {
-    // 1. Abonnement direct actif
-    const sub = stmts.getSubscription.get(discordId);
-    if (sub) {
-        if (sub.expires_at && new Date(sub.expires_at) < new Date()) {
-            stmts.expireSubscriptions.run();
-        } else {
-            return sub.tier;
-        }
-    }
-    // 2. Couvert par un pack streamer
-    const seat = stmts.getSeatByUser.get(discordId);
-    if (seat && seat.sub_status === 'active') {
-        return 'premium'; // couvert par un pack streamer → premium
-    }
-    return 'free';
-}
-
-function loadTier(req, res, ctx) {
-    if (!ctx.session) return true;
-    ctx.tier = getUserTier(ctx.session.discordId);
-    ctx.tierLimits = TIER_LIMITS[ctx.tier] || TIER_LIMITS.free;
-    return true;
-}
-
-function requirePremium(req, res, ctx) {
-    if (!ctx.tier || ctx.tier === 'free') {
-        return json(res, { error: "Fonctionnalité premium requise", tier: 'free', upgrade: true }, 403, req), false;
-    }
-    return true;
-}
-
-// ════════════════════════════════════════════════════════════════
-// MULTIPART PARSER
-// ════════════════════════════════════════════════════════════════
-function indexOf(buf, search, start = 0) {
-    for (let i = start; i <= buf.length - search.length; i++) {
-        let ok = true;
-        for (let j = 0; j < search.length; j++) {
-            if (buf[i + j] !== search[j]) {
-                ok = false;
-                break;
-            }
-        }
-        if (ok) return i;
-    }
-    return -1;
-}
-function parseMultipart(body, boundary) {
-    // Parser multipart minimaliste (sans dépendance externe).
-    // Suffisant ici car on ne gère qu'un formulaire simple (token, stateKey, image).
-    const parts = [],
-        sep = Buffer.from(`--${boundary}`);
-    let offset = 0;
-    while (offset < body.length) {
-        const start = indexOf(body, sep, offset);
-        if (start === -1) break;
-        offset = start + sep.length;
-        if (body[offset] === 45 && body[offset + 1] === 45) break;
-        if (body[offset] === 13) offset += 2;
-        const he = indexOf(body, Buffer.from("\r\n\r\n"), offset);
-        if (he === -1) break;
-        const hs = body.slice(offset, he).toString();
-        offset = he + 4;
-        const ns = indexOf(body, sep, offset),
-            de = ns === -1 ? body.length : ns - 2,
-            data = body.slice(offset, de);
-        offset = ns === -1 ? body.length : ns;
-        parts.push({
-            name: hs.match(/name="([^"]+)"/)?.[1] || "",
-            filename: hs.match(/filename="([^"]+)"/)?.[1] || "",
-            contentType: hs.match(/Content-Type:\s*(.+)/i)?.[1]?.trim() || "",
-            data,
-        });
-    }
-    return parts;
-}
-
+// MULTIPART PARSER → src/routes/upload.js (parser inclus dans le module)
 // ════════════════════════════════════════════════════════════════
 // SESSIONS & AUTHENTIFICATION OAuth2 Discord
 // ════════════════════════════════════════════════════════════════
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
-const sessions = new Map();
-const oauthStates = new Map();
-const AUTH_ENABLED = Boolean(process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET);
+// sessions, oauthStates, AUTH_ENABLED, parseCookies, getSession,
+// createSession, setSessionCookie, getUserRole importés depuis src/services/authService.js
+// requireAuth, requireAdmin, requireClientOrAdmin importés depuis src/http/middleware.js
 
-// Nettoyage périodique des sessions expirées et des états OAuth (toutes les 60s)
+// deviceAuthRequests est géré dans src/routes/device.js (son nettoyage périodique aussi)
+
+// Nettoyage périodique DB (sessions/auth nettoyées par authService.js, device auth par device.js)
 setInterval(() => {
-    const now = Date.now();
-    for (const [sid, s] of sessions) {
-        if (s.expiresAt < now) sessions.delete(sid);
-    }
-    for (const [state, data] of oauthStates) {
-        const exp = typeof data === 'number' ? data : data?.expiresAt;
-        if (now > exp) oauthStates.delete(state);
-    }
-    // Nettoyage device auth requests expirés
-    for (const [k, v] of deviceAuthRequests) {
-        if (now > v.expiresAt) deviceAuthRequests.delete(k);
-    }
     // Nettoyage DB périodique (subscriptions expirées, invitations, notifications)
     try {
         stmts.expireSubscriptions.run();
@@ -944,149 +432,19 @@ setInterval(() => {
     } catch {}
 }, 60_000);
 
-function generateSessionId() { return crypto.randomBytes(32).toString("hex"); }
-
-function signCookie(value) {
-    const sig = crypto.createHmac("sha256", SESSION_SECRET).update(value).digest("base64url");
-    return `${value}.${sig}`;
-}
-
+// Compatibilité: getUserRole disponible via authService
+// verifyCookie utilisé dans handleAuthLogout — accès via parseCookies + sessions Map
 function verifyCookie(signed) {
+    // Ré-implémentation locale pour handleAuthLogout qui en a besoin directement
     const idx = signed.lastIndexOf('.');
     if (idx === -1) return null;
     const value = signed.slice(0, idx);
     const sig = signed.slice(idx + 1);
+    const SESSION_SECRET = process.env.SESSION_SECRET;
+    if (!SESSION_SECRET) return null;
     const expected = crypto.createHmac("sha256", SESSION_SECRET).update(value).digest("base64url");
     if (sig.length !== expected.length) return null;
     return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected)) ? value : null;
-}
-
-function parseCookies(req) {
-    const cookies = {};
-    (req.headers.cookie || '').split(';').forEach(pair => {
-        const [k, ...v] = pair.trim().split('=');
-        if (k) cookies[k.trim()] = v.join('=');
-    });
-    return cookies;
-}
-
-function setSessionCookie(res, sessionId) {
-    const signed = signCookie(sessionId);
-    const maxAge = 7 * 24 * 60 * 60;
-    const secure = BASE_URL.startsWith('https://') ? '; Secure' : '';
-    res.setHeader('Set-Cookie', `pngtuber_session=${signed}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`);
-}
-
-function getSession(req) {
-    const cookies = parseCookies(req);
-    const signed = cookies['pngtuber_session'];
-    if (!signed) return null;
-    const sessionId = verifyCookie(signed);
-    if (!sessionId) return null;
-    const session = sessions.get(sessionId);
-    if (!session || session.expiresAt < Date.now()) {
-        sessions.delete(sessionId);
-        return null;
-    }
-    return session;
-}
-
-function createSession(discordUser, userGuildIds = []) {
-    const id = generateSessionId();
-    sessions.set(id, {
-        discordId: discordUser.id,
-        username: discordUser.username,
-        avatar: discordUser.avatar,
-        role: getUserRole(discordUser.id),
-        userGuildIds,
-        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-    });
-    return id;
-}
-
-// ── Middleware d'authentification ────────────────────────────────
-function requireAuth(req, res, ctx) {
-    if (!AUTH_ENABLED) {
-        // Injecter une session fictive pour éviter les crashes sur ctx.session.discordId
-        ctx.session = ctx.session || { discordId: 'anonymous', role: 'admin', username: 'Anonymous' };
-        return true;
-    }
-    // Support Bearer token (mini-agent local / app)
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-        const rawToken = authHeader.slice(7);
-        const hash = crypto.createHash('sha256').update(rawToken).digest('hex');
-        const row = stmts.getAppToken.get(hash);
-        if (row) {
-            stmts.touchAppToken.run(hash);
-            // Les app tokens sont limités au rôle 'client' — pas d'accès admin via token
-            const actualRole = getUserRole(row.discord_id);
-            ctx.session = {
-                discordId: row.discord_id,
-                role: actualRole === 'admin' ? 'client' : actualRole,
-                actualRole, // rôle réel conservé pour référence
-                appAuth: true,
-                deviceName: row.device_name,
-            };
-            return true;
-        }
-        json(res, { error: "Token API invalide ou révoqué" }, 401, req);
-        return false;
-    }
-    const session = getSession(req);
-    if (!session) {
-        const accept = req.headers.accept || '';
-        if (accept.includes('application/json') || req.headers['content-type']) {
-            json(res, { error: "Non authentifié" }, 401, req);
-            return false;
-        }
-        res.writeHead(302, { Location: '/auth/login' });
-        res.end();
-        return false;
-    }
-    // Forcer re-login si la session n'a pas userGuildIds (ancien scope sans guilds)
-    if (session.role !== 'admin' && !session.userGuildIds) {
-        // Invalider la session et rediriger vers login
-        const cookies = parseCookies(req);
-        const signed = cookies['pngtuber_session'];
-        if (signed) { const sid = verifyCookie(signed); if (sid) sessions.delete(sid); }
-        const accept = req.headers.accept || '';
-        if (accept.includes('application/json') || req.headers['content-type']) {
-            json(res, { error: "Session expirée, veuillez vous reconnecter" }, 401, req);
-            return false;
-        }
-        res.setHeader('Set-Cookie', 'pngtuber_session=; Path=/; HttpOnly; Max-Age=0');
-        res.writeHead(302, { Location: '/auth/login' });
-        res.end();
-        return false;
-    }
-    ctx.session = session;
-    return true;
-}
-
-// ── Middleware admin / client ────────────────────────────────────
-function requireAdmin(req, res, ctx) {
-    if (!AUTH_ENABLED) return true;
-    if (!ctx.session || ctx.session.role !== 'admin') {
-        json(res, { error: "Accès réservé à l'administrateur" }, 403, req);
-        return false;
-    }
-    return true;
-}
-
-function requireClientOrAdmin(req, res, ctx) {
-    if (!AUTH_ENABLED) return true;
-    if (!ctx.session) { json(res, { error: "Non authentifié" }, 401, req); return false; }
-    if (ctx.session.role === 'admin') return true;
-    if (ctx.session.role === 'client') {
-        const paramToken = ctx.params?.token;
-        const ownToken = tokenFor(ctx.session.discordId);
-        if (paramToken && paramToken === ownToken) return true;
-        // For body-based tokens, check ctx._bodyToken
-        if (ctx._bodyToken && ctx._bodyToken === ownToken) return true;
-    }
-    json(res, { error: "Accès refusé" }, 403, req);
-    return false;
 }
 
 async function parseBodyToken(req, res, ctx) {
@@ -1293,38 +651,7 @@ function shutdownApp() {
 // ════════════════════════════════════════════════════════════════
 // MINI-ROUTEUR & HANDLERS
 // ════════════════════════════════════════════════════════════════
-const routes = [];
-
-function route(method, pattern, ...handlers) {
-    routes.push({ method, pattern, handlers });
-}
-
-function matchRoute(method, pathname) {
-    for (const r of routes) {
-        if (r.method !== method && r.method !== '*') continue;
-        if (r.pattern === pathname) return { route: r, params: {} };
-        const rParts = r.pattern.split('/');
-        const pParts = pathname.split('/');
-        if (rParts.length === pParts.length) {
-            const params = {};
-            let match = true;
-            for (let i = 0; i < rParts.length; i++) {
-                if (rParts[i].startsWith(':')) {
-                    params[rParts[i].slice(1)] = decodeURIComponent(pParts[i]);
-                } else if (rParts[i] !== pParts[i]) {
-                    match = false; break;
-                }
-            }
-            if (match) return { route: r, params };
-        }
-        if (r.pattern.endsWith('/*')) {
-            const prefix = r.pattern.slice(0, -2);
-            if (pathname.startsWith(prefix + '/') || pathname === prefix)
-                return { route: r, params: { '*': pathname.slice(prefix.length + 1) } };
-        }
-    }
-    return null;
-}
+// route(), matchRoute() importés depuis src/http/router.js
 
 // ── Route handlers ──────────────────────────────────────────────
 
@@ -1354,6 +681,8 @@ async function handleLevels(req, res, ctx) {
             db: d.db, rms: d.rms, freq: d.freq,
             freqDelta: d.freqDelta || { low: 0, mid: 0, high: 0 },
             zcr: d.zcr || 0, centroid: d.centroid || 0, energyVar: d.energyVar || 0,
+            formants: d.formants || { f1: 0, f2: 0, f3: 0 },
+            voiceProfileN: (getVoiceStats(uid)?.n || 0),
             detectedEmotion: manualEmotion.get(tk)?.emotion || d.detectedEmotion || null,
             state: smoothAndClassifyState(tk, d.db),
             speaking: d.speaking, displayName: d.displayName, updated: d.updated,
@@ -1370,6 +699,9 @@ async function handleLevels(req, res, ctx) {
                     mid: Math.round(bl.freqStd.mid * 1000) / 1000,
                     high: Math.round(bl.freqStd.high * 1000) / 1000,
                 },
+                formantMean: bl.formantMean || null,
+                formantStd:  bl.formantStd  || null,
+                formantSampleCount: bl.formantSampleCount || 0,
                 sampleCount: bl.sampleCount,
             } : null,
         };
@@ -1395,30 +727,7 @@ async function handleBotInfo(req, res, ctx) {
     }, 200, req);
 }
 
-// POST /bot-token
-async function handleBotToken(req, res, ctx) {
-    try {
-        const { token } = JSON.parse((await readBody(req)).toString());
-        if (!token || token.trim().length < 50)
-            return json(res, { ok: false, error: "Token trop court" }, 400, req);
-        const vRes = await fetch(
-            "https://discord.com/api/v10/users/@me",
-            { headers: { Authorization: `Bot ${token.trim()}` } },
-        );
-        if (!vRes.ok) {
-            const e = await vRes.json().catch(() => ({}));
-            return json(res, { ok: false, error: `Rejeté: ${e.message || vRes.status}` }, 401, req);
-        }
-        const botUser = await vRes.json();
-        setEnvKey("DISCORD_TOKEN", token.trim());
-        console.log(`Token mis à jour → redémarrage...`);
-        setTimeout(() => process.exit(0), 500);
-        return json(res, { ok: true, tag: botUser.username }, 200, req);
-    } catch (err) {
-        console.error("Bot token error:", err);
-        return json(res, { ok: false, error: "Erreur lors de la validation du token" }, 500, req);
-    }
-}
+// POST /bot-token → src/routes/config.js (handleBotToken) — wrapper ci-dessous
 
 // GET /frames/:token
 async function handleFrames(req, res, ctx) {
@@ -1462,241 +771,12 @@ async function handleImages(req, res, ctx) {
     res.end("Not found");
 }
 
-// GET /user-config/:token
-async function handleGetUserConfig(req, res, ctx) {
-    const token = ctx.params.token;
-    if (!uidFor(token) && !isKnownToken(token)) return json(res, { error: "token inconnu" }, 404, req);
-    const row = stmts.getUserConfig.get(token);
-    return json(res, row ? JSON.parse(row.config_json || "{}") : {}, 200, req);
-}
-
-// POST /user-config/:token
-async function handlePostUserConfig(req, res, ctx) {
-    try {
-        const token = ctx.params.token;
-        if (!uidFor(token) && !isKnownToken(token)) return json(res, { error: "token inconnu" }, 404, req);
-        const cfg = JSON.parse((await readBody(req)).toString());
-        if (!validateUserConfig(cfg))
-            return json(res, { error: "Configuration invalide" }, 400, req);
-        // Enforcement tier : strip les fonctionnalités premium pour le tier free
-        const tierLimits = ctx.tierLimits || TIER_LIMITS.free;
-        if (!tierLimits.emotionsEnabled) {
-            delete cfg.emotions;
-            delete cfg.emotionFingerprints;
-            delete cfg.emotionHotkeys;
-        }
-        if (!tierLimits.calibrationEnabled) {
-            delete cfg.calibration;
-        }
-        stmts.upsertUser.run(token, cfg.displayName || "???", JSON.stringify(cfg));
-        broadcastConfigUpdate(token);
-        return json(res, { ok: true }, 200, req);
-    } catch (err) {
-        console.error("Config save error:", err);
-        return json(res, { error: "Erreur lors de la sauvegarde" }, 500, req);
-    }
-}
-
-// ── Calibration routes ─────────────────────────────────────────
-
-// POST /calibration/:token/reset — réinitialise la baseline vocale
-async function handleCalibrationReset(req, res, ctx) {
-    const token = ctx.params.token;
-    if (!uidFor(token) && !isKnownToken(token))
-        return json(res, { error: "token inconnu" }, 404, req);
-    // Trouver le userId associé au token
-    const uid = uidFor(token);
-    if (uid) userBaseline.delete(uid);
-    // Supprimer aussi la calibration persistée dans config
-    const row = stmts.getUserConfig.get(token);
-    if (row) {
-        try {
-            const cfg = JSON.parse(row.config_json || '{}');
-            if (cfg.calibration) {
-                delete cfg.calibration;
-                stmts.upsertUser.run(token, cfg.displayName || '???', JSON.stringify(cfg));
-            }
-        } catch {}
-    }
-    return json(res, { ok: true }, 200, req);
-}
-
-// POST /calibration/:token/auto-thresholds — calcule les seuils optimaux
-async function handleAutoThresholds(req, res, ctx) {
-    const token = ctx.params.token;
-    const uid = uidFor(token);
-    if (!uid && !isKnownToken(token))
-        return json(res, { error: "token inconnu" }, 404, req);
-    const bl = uid ? userBaseline.get(uid) : null;
-    if (!bl || bl.sampleCount < 100)
-        return json(res, { error: "Calibration insuffisante", sampleCount: bl?.sampleCount || 0 }, 400, req);
-    const mean = bl.dbMean;
-    const std = Math.max(bl.dbStd, 2); // minimum 2 dB d'écart-type
-    const thresholds = [
-        { key: "low",    db: Math.round(mean - 1.5 * std), label: "Low",    color: "#4a90e2" },
-        { key: "medium", db: Math.round(mean - 0.3 * std), label: "Medium", color: "#f0a500" },
-        { key: "high",   db: Math.round(mean + 1.2 * std), label: "High",   color: "#e74c6c" },
-    ];
-    return json(res, { thresholds, baseline: { dbMean: Math.round(mean * 100) / 100, dbStd: Math.round(std * 100) / 100 } }, 200, req);
-}
-
-// POST /calibration/:token/auto-emotions — calcule les émotions basées sur la baseline
-async function handleAutoEmotions(req, res, ctx) {
-    const token = ctx.params.token;
-    const uid = uidFor(token);
-    if (!uid && !isKnownToken(token))
-        return json(res, { error: "token inconnu" }, 404, req);
-    const bl = uid ? userBaseline.get(uid) : null;
-    if (!bl || bl.sampleCount < 100)
-        return json(res, { error: "Calibration insuffisante", sampleCount: bl?.sampleCount || 0 }, 400, req);
-    // Calculer des émotions adaptées à la baseline fréquentielle du user
-    const emotions = [
-        {
-            key: "anger", label: "Anger", minStatus: "medium",
-            freqMin: 20, freqMax: 400,
-            sensitivity: 1.3,
-            useBaseline: true, deviationDirection: "below",
-            deviationThreshold: 1.5,
-        },
-        {
-            key: "happy", label: "Happy", minStatus: "low",
-            freqMin: 1500, freqMax: 6000,
-            sensitivity: 1.3,
-            useBaseline: true, deviationDirection: "above",
-            deviationThreshold: 1.2,
-        },
-        {
-            key: "scream", label: "Scream", minStatus: "high",
-            freqMin: 800, freqMax: 4000,
-            sensitivity: 1.5,
-        },
-    ];
-    return json(res, {
-        emotions,
-        baseline: {
-            freqMean: {
-                low: Math.round(bl.freqMean.low * 1000) / 1000,
-                mid: Math.round(bl.freqMean.mid * 1000) / 1000,
-                high: Math.round(bl.freqMean.high * 1000) / 1000,
-            },
-            freqStd: {
-                low: Math.round(bl.freqStd.low * 1000) / 1000,
-                mid: Math.round(bl.freqStd.mid * 1000) / 1000,
-                high: Math.round(bl.freqStd.high * 1000) / 1000,
-            },
-        },
-    }, 200, req);
-}
-
-// ── Empreintes vocales — enregistrement + détection ────────────
-
-function fpAvg(arr) { return arr.length ? arr.reduce((a, v) => a + v, 0) / arr.length : 0; }
-function fpStd(arr) {
-    if (arr.length < 2) return 0;
-    const m = fpAvg(arr);
-    return Math.sqrt(arr.reduce((a, v) => a + (v - m) ** 2, 0) / arr.length);
-}
-
-function computeFingerprint(samples) {
-    const features = ['db', 'zcr', 'centroid', 'energyVar'];
-    const freqBands = ['low', 'mid', 'high'];
-    const fp = {};
-    for (const f of features) {
-        const vals = samples.map(s => s[f]).filter(v => typeof v === 'number');
-        fp[f] = { mean: Math.round(fpAvg(vals) * 100) / 100, std: Math.round(fpStd(vals) * 100) / 100 };
-    }
-    for (const band of freqBands) {
-        const vals = samples.map(s => s.freq?.[band]).filter(v => typeof v === 'number');
-        fp['freq_' + band] = { mean: Math.round(fpAvg(vals) * 1000) / 1000, std: Math.round(fpStd(vals) * 1000) / 1000 };
-    }
-    return fp;
-}
-
-// Cache des fingerprints par token (évite lecture SQLite à chaque tick)
-const fingerprintCache = new Map(); // token → { fingerprints, ts }
-const FP_CACHE_TTL = 5000; // 5s
-
-function getFingerprints(token) {
-    const cached = fingerprintCache.get(token);
-    if (cached && Date.now() - cached.ts < FP_CACHE_TTL) return cached.fingerprints;
-    const row = stmts.getUserConfig.get(token);
-    if (!row) { fingerprintCache.set(token, { fingerprints: null, ts: Date.now() }); return null; }
-    let cfg;
-    try { cfg = JSON.parse(row.config_json || '{}'); } catch { return null; }
-    const fp = cfg.emotionFingerprints || null;
-    fingerprintCache.set(token, { fingerprints: fp, ts: Date.now() });
-    return fp;
-}
-
-// Invalider le cache quand on sauvegarde/supprime un fingerprint
-function invalidateFingerprintCache(token) { fingerprintCache.delete(token); }
-
-// ── Hystérésis d'émotion ──
-// Évite les changements trop rapides d'émotion.
-// Requiert N détections consécutives avant de changer, et maintient l'émotion
-// pendant un hold après qu'elle cesse d'être détectée.
-const emotionState = new Map(); // token → { current, candidate, confirmCount, holdUntil }
-const EMOTION_CONFIRM_COUNT = 5;  // 5 × 50ms = 250ms avant de changer d'émotion
-const EMOTION_HOLD_MS = 800;      // Maintenir l'émotion 800ms après la dernière détection
-
-function stabilizeEmotion(token, rawEmotion) {
-    const now = Date.now();
-    let st = emotionState.get(token);
-    if (!st) {
-        st = { current: null, candidate: null, confirmCount: 0, holdUntil: 0 };
-        emotionState.set(token, st);
-    }
-
-    if (rawEmotion) {
-        if (rawEmotion === st.current) {
-            // Même émotion que l'actuelle → prolonger le hold
-            st.holdUntil = now + EMOTION_HOLD_MS;
-            st.candidate = null;
-            st.confirmCount = 0;
-            return st.current;
-        }
-        // Nouvelle émotion différente → accumuler des confirmations
-        if (rawEmotion === st.candidate) {
-            st.confirmCount++;
-        } else {
-            st.candidate = rawEmotion;
-            st.confirmCount = 1;
-        }
-        // Assez de confirmations → changer
-        if (st.confirmCount >= EMOTION_CONFIRM_COUNT) {
-            st.current = rawEmotion;
-            st.holdUntil = now + EMOTION_HOLD_MS;
-            st.candidate = null;
-            st.confirmCount = 0;
-            return st.current;
-        }
-        // Pas encore confirmé → garder l'émotion actuelle si dans le hold
-        if (st.current && now < st.holdUntil) return st.current;
-        return st.current; // garder l'actuelle même si hold expiré
-    }
-
-    // rawEmotion est null → plus d'émotion détectée
-    st.candidate = null;
-    st.confirmCount = 0;
-    if (st.current && now < st.holdUntil) return st.current; // hold actif
-    // Hold expiré → effacer l'émotion
-    st.current = null;
-    return null;
-}
+// GET /user-config/:token → src/routes/config.js (handleGetUserConfig)
+// POST /user-config/:token → src/routes/config.js (handlePostUserConfig)
 
 // ── Émotion manuelle (override via raccourcis clavier / agent local) ──
-// Priorité sur la détection automatique par empreintes vocales.
-const manualEmotion = new Map(); // token → { emotion, setAt }
-const MANUAL_EMOTION_TIMEOUT_MS = 30 * 60 * 1000; // 30min sécurité
-
-function setManualEmotion(token, emotion) {
-    if (!emotion) {
-        manualEmotion.delete(token);
-        return null;
-    }
-    manualEmotion.set(token, { emotion, setAt: Date.now() });
-    return emotion;
-}
+// manualEmotion, setManualEmotion, handleGetEmotion, handleSetEmotion → src/routes/emotion.js
+// Note : code de calibration vocale archivé dans src/bot/calibration.js (dormant)
 
 // ── Lissage d'état audio côté serveur ──
 // Source unique de vérité : le serveur calcule l'état final (silent/low/med/high)
@@ -1745,314 +825,14 @@ function smoothAndClassifyState(token, rawDb) {
     return status;
 }
 
-// Détection d'émotion par comparaison aux empreintes enregistrées
-function detectEmotionFromFingerprints(token, features) {
-    const fingerprints = getFingerprints(token);
-    if (!fingerprints || typeof fingerprints !== 'object') return stabilizeEmotion(token, null);
+// GET /api/emotion/:token → src/routes/emotion.js (handleGetEmotion)
+// POST /api/emotion/:token → src/routes/emotion.js (handleSetEmotion)
+// GET /known-users → src/routes/config.js (handleKnownUsers)
 
-    let bestKey = null, bestDist = Infinity;
-    for (const [key, fp] of Object.entries(fingerprints)) {
-        let dist = 0, count = 0;
-        for (const f of Object.keys(fp)) {
-            let current;
-            if (f.startsWith('freq_')) current = features.freq?.[f.slice(5)];
-            else current = features[f];
-            if (current === undefined || current === null) continue;
-            const std = fp[f].std || 0.001;
-            dist += ((current - fp[f].mean) / std) ** 2;
-            count++;
-        }
-        dist = count > 0 ? Math.sqrt(dist / count) : Infinity;
-        if (dist < bestDist) { bestDist = dist; bestKey = key; }
-    }
-    // Seuil : distance normalisée < 2.0 (2 écarts-types)
-    const rawEmotion = bestDist < 2.0 ? bestKey : null;
-    return stabilizeEmotion(token, rawEmotion);
-}
-
-// GET /api/emotion/:token — état de l'émotion manuelle
-async function handleGetEmotion(req, res, ctx) {
-    const token = ctx.params.token;
-    const manual = manualEmotion.get(token);
-    return json(res, { active: manual?.emotion || null }, 200, req);
-}
-
-// POST /api/emotion/:token — définir ou effacer l'émotion manuelle
-async function handleSetEmotion(req, res, ctx) {
-    const token = ctx.params.token;
-    if (!uidFor(token) && !isKnownToken(token))
-        return json(res, { error: "token inconnu" }, 404, req);
-    let body;
-    try { body = await parseJsonBody(req); } catch { return json(res, { error: "JSON invalide" }, 400, req); }
-    const emotion = typeof body.emotion === 'string' ? body.emotion : null;
-    const active = setManualEmotion(token, emotion);
-    return json(res, { ok: true, active }, 200, req);
-}
-
-// POST /calibration/:token/record-start — démarre l'enregistrement d'empreinte vocale
-async function handleRecordStart(req, res, ctx) {
-    const token = ctx.params.token;
-    if (!uidFor(token) && !isKnownToken(token))
-        return json(res, { error: "token inconnu" }, 404, req);
-    let durationMs = 5000;
-    try {
-        const body = await parseJsonBody(req);
-        if (body.durationMs && typeof body.durationMs === 'number') durationMs = Math.min(Math.max(body.durationMs, 2000), 15000);
-    } catch {}
-    recordingSessions.set(token, { startedAt: Date.now(), durationMs, samples: [] });
-    return json(res, { ok: true, durationMs }, 200, req);
-}
-
-// POST /calibration/:token/record-stop — arrête l'enregistrement et retourne l'empreinte
-async function handleRecordStop(req, res, ctx) {
-    const token = ctx.params.token;
-    const session = recordingSessions.get(token);
-    if (!session) return json(res, { error: "Aucune session d'enregistrement active" }, 400, req);
-    recordingSessions.delete(token);
-    if (session.samples.length < 10)
-        return json(res, { error: "Pas assez d'échantillons", count: session.samples.length }, 400, req);
-    const fingerprint = computeFingerprint(session.samples);
-    return json(res, { ok: true, fingerprint, sampleCount: session.samples.length }, 200, req);
-}
-
-// POST /calibration/:token/save-fingerprint — sauvegarde une empreinte vocale
-async function handleSaveFingerprint(req, res, ctx) {
-    const token = ctx.params.token;
-    if (!uidFor(token) && !isKnownToken(token))
-        return json(res, { error: "token inconnu" }, 404, req);
-    let body;
-    try { body = await parseJsonBody(req); } catch { return json(res, { error: "JSON invalide" }, 400, req); }
-    const { emotionKey, fingerprint } = body;
-    if (!emotionKey || typeof emotionKey !== 'string') return json(res, { error: "emotionKey requis" }, 400, req);
-    if (!fingerprint || typeof fingerprint !== 'object') return json(res, { error: "fingerprint requis" }, 400, req);
-    // Charger config existante
-    const row = stmts.getUserConfig.get(token);
-    const cfg = row ? JSON.parse(row.config_json || '{}') : {};
-    if (!cfg.emotionFingerprints) cfg.emotionFingerprints = {};
-    cfg.emotionFingerprints[emotionKey] = fingerprint;
-    stmts.upsertUser.run(token, cfg.displayName || row?.display_name || '???', JSON.stringify(cfg));
-    invalidateFingerprintCache(token);
-    return json(res, { ok: true }, 200, req);
-}
-
-// DELETE /calibration/:token/fingerprint/:emotionKey — supprime une empreinte
-async function handleDeleteFingerprint(req, res, ctx) {
-    const token = ctx.params.token;
-    const emotionKey = ctx.params.emotionKey;
-    if (!uidFor(token) && !isKnownToken(token))
-        return json(res, { error: "token inconnu" }, 404, req);
-    const row = stmts.getUserConfig.get(token);
-    if (!row) return json(res, { error: "config introuvable" }, 404, req);
-    const cfg = JSON.parse(row.config_json || '{}');
-    if (cfg.emotionFingerprints) {
-        delete cfg.emotionFingerprints[emotionKey];
-        if (Object.keys(cfg.emotionFingerprints).length === 0) delete cfg.emotionFingerprints;
-    }
-    stmts.upsertUser.run(token, cfg.displayName || row.display_name || '???', JSON.stringify(cfg));
-    invalidateFingerprintCache(token);
-    return json(res, { ok: true }, 200, req);
-}
-
-// GET /known-users — token + displayName uniquement (via SQLite)
-async function handleKnownUsers(req, res, ctx) {
-    const users = [];
-    // Users actifs en mémoire
-    for (const [uid, token] of uidToToken) {
-        const row = stmts.getUser.get(token);
-        const cfg = row ? JSON.parse(row.config_json || "{}") : null;
-        users.push({
-            token,
-            displayName: cfg?.displayName || row?.display_name || "???",
-            hasConfig: !!row,
-        });
-    }
-    // Users persistés en base (sessions précédentes)
-    for (const row of stmts.allUsers.all()) {
-        if (users.find((u) => u.token === row.token)) continue;
-        users.push({
-            token: row.token,
-            displayName: row.display_name || "???",
-            hasConfig: true,
-            offline: true,
-        });
-    }
-    return json(res, users, 200, req);
-}
-
-// POST /upload — champ "token" au lieu de "userId" — conversion WebP auto
-async function handleUpload(req, res, ctx) {
-    try {
-        // Rate limit: 30 uploads par minute par IP
-        const clientIp = getClientIp(req);
-        if (rateLimit(`upload:${clientIp}`, 30, 60_000))
-            return json(res, { error: "Trop de requêtes, réessayez dans une minute" }, 429, req);
-
-        const body = await readBody(req, 50 * 1024 * 1024),
-            ct = req.headers["content-type"] || "",
-            bm = ct.match(/boundary=([^\s;]+)/);
-        if (!bm) return json(res, { error: "boundary manquant" }, 400, req);
-        const parts = parseMultipart(body, bm[1]),
-            fields = {};
-        for (const p of parts)
-            if (!p.filename) fields[p.name] = p.data.toString();
-        const imgPart = parts.find((p) => p.filename);
-        const { token, stateKey } = fields;
-        if ((!uidFor(token) && !isKnownToken(token)) || !stateKey || !imgPart)
-            return json(res, { error: "token invalide, stateKey ou image manquant" }, 400, req);
-        // Validation stateKey: caractères sûrs uniquement (empêche path traversal)
-        if (!SAFE_STATE_KEY.test(stateKey))
-            return json(res, { error: "stateKey invalide (caractères alphanumériques, _ et - uniquement)" }, 400, req);
-        const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
-        if (imgPart.data.length > MAX_IMAGE_SIZE)
-            return json(res, { error: "Image trop volumineuse (max 10 Mo)" }, 413, req);
-        const ext = path.extname(imgPart.filename).toLowerCase();
-        // Formats acceptés: PNG, JPG, GIF, WebP uniquement (SVG interdit — vecteur XSS)
-        const ALLOWED_IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
-        if (!ALLOWED_IMAGE_EXTS.includes(ext))
-            return json(res, { error: "Format non supporté (PNG, JPG, GIF, WebP uniquement)" }, 400, req);
-        // Validation magic bytes: vérifier que le contenu correspond à l'extension
-        if (!validateMagicBytes(imgPart.data, ext))
-            return json(res, { error: "Le contenu du fichier ne correspond pas au format déclaré" }, 400, req);
-
-        // ── Enforcement tier : limites d'upload ──
-        const limits = ctx.tierLimits || TIER_LIMITS.free;
-        const isClosed = stateKey.endsWith('_closed');
-        const existingStates = db.prepare("SELECT DISTINCT state_key FROM frames WHERE token = ?").all(token);
-        const isNewState = !existingStates.some(s => s.state_key === stateKey);
-        if (isNewState) {
-            const openCount = existingStates.filter(s => !s.state_key.endsWith('_closed')).length;
-            const closedCount = existingStates.filter(s => s.state_key.endsWith('_closed')).length;
-            if (isClosed && closedCount >= limits.maxClosedStates)
-                return json(res, { error: `Limite atteinte : ${limits.maxClosedStates} états fermés maximum`, tier: ctx.tier || 'free', upgrade: true }, 403, req);
-            if (!isClosed && openCount >= limits.maxStates)
-                return json(res, { error: `Limite atteinte : ${limits.maxStates} états maximum`, tier: ctx.tier || 'free', upgrade: true }, 403, req);
-        }
-        const framesInState = stmts.getFramesByState.all(token, stateKey);
-        if (framesInState.length >= limits.maxFramesPerState)
-            return json(res, { error: `Limite atteinte : ${limits.maxFramesPerState} frames par état`, tier: ctx.tier || 'free', upgrade: true }, 403, req);
-
-        // Conversion sécurisée WebP via sharp (reprocessing = sanitisation)
-        const isGif = ext === ".gif";
-        let outputBuffer;
-        try {
-            outputBuffer = await sharp(imgPart.data, isGif ? { animated: true } : {})
-                .webp({ quality: 85 })
-                .toBuffer();
-        } catch (sharpErr) {
-            return json(res, { error: "Image invalide ou corrompue" }, 400, req);
-        }
-        const outputExt = ".webp";
-
-        const dir = stateDirByToken(token, stateKey);
-        // Vérification path traversal sur le répertoire cible
-        const resolvedDir = path.resolve(dir);
-        if (!resolvedDir.startsWith(path.resolve(IMAGES_DIR)))
-            return json(res, { error: "Chemin invalide" }, 403, req);
-        fs.mkdirSync(dir, { recursive: true });
-        const baseName = path.basename(imgPart.filename, ext).replace(/[^a-zA-Z0-9._-]/g, "_");
-        const fname = `${Date.now()}_${baseName}${outputExt}`;
-        fs.writeFileSync(path.join(dir, fname), outputBuffer);
-
-        // Insérer en base de données
-        const maxOrder = stmts.maxSortOrder.get(token, stateKey).max_order;
-        stmts.insertFrame.run(token, stateKey, fname, maxOrder + 1, ext, outputBuffer.length);
-        // S'assurer que l'utilisateur existe en DB
-        if (!stmts.getUser.get(token)) {
-            stmts.upsertUser.run(token, "???", "{}");
-        }
-
-        broadcastFrameUpdate(token);
-        return json(res, {
-            ok: true,
-            file: fname,
-            url: `/images/${token}/${stateKey}/${fname}`,
-        }, 200, req);
-    } catch (err) {
-        console.error("Upload error:", err);
-        return json(res, { error: "Erreur lors de l'upload" }, 500, req);
-    }
-}
-
-// POST /reorder  { token, stateKey, order:[] }
-async function handleReorder(req, res, ctx) {
-    try {
-        const { token, stateKey, order } = ctx._parsedBody || JSON.parse(
-            (await readBody(req)).toString(),
-        );
-        if ((!uidFor(token) && !isKnownToken(token)) || !stateKey || !Array.isArray(order))
-            return json(res, { error: "params manquants" }, 400, req);
-        const updateOrder = db.transaction((files) => {
-            for (let i = 0; i < files.length; i++) {
-                stmts.updateFrameOrder.run(i, token, stateKey, files[i]);
-            }
-        });
-        updateOrder(order);
-        return json(res, { ok: true }, 200, req);
-    } catch (err) {
-        console.error("Reorder error:", err);
-        return json(res, { error: "Erreur lors du réordonnement" }, 500, req);
-    }
-}
-
-// POST /delete-frame  { token, stateKey, file }
-async function handleDeleteFrame(req, res, ctx) {
-    try {
-        const { token, stateKey, file } = ctx._parsedBody || JSON.parse(
-            (await readBody(req)).toString(),
-        );
-        if ((!uidFor(token) && !isKnownToken(token)) || !stateKey || !file)
-            return json(res, { error: "params manquants" }, 400, req);
-        if (!SAFE_STATE_KEY.test(stateKey) || !SAFE_FILENAME.test(file))
-            return json(res, { error: "Paramètres invalides" }, 400, req);
-        const fp = path.resolve(path.join(IMAGES_DIR, token, stateKey, file));
-        if (!fp.startsWith(path.resolve(IMAGES_DIR)))
-            return json(res, { error: "Interdit" }, 403, req);
-        if (fs.existsSync(fp)) fs.unlinkSync(fp);
-        stmts.deleteFrame.run(token, stateKey, file);
-        broadcastFrameUpdate(token);
-        return json(res, { ok: true }, 200, req);
-    } catch (err) {
-        console.error("Delete frame error:", err);
-        return json(res, { error: "Erreur lors de la suppression" }, 500, req);
-    }
-}
-
-// POST /move-frame  { token, file, fromState, toState }
-async function handleMoveFrame(req, res, ctx) {
-    try {
-        const { token, file, fromState, toState } = ctx._parsedBody || JSON.parse(
-            (await readBody(req)).toString(),
-        );
-        if (!token || !file || !fromState || !toState)
-            return json(res, { error: "params manquants" }, 400, req);
-        if (!SAFE_STATE_KEY.test(fromState) || !SAFE_STATE_KEY.test(toState) || !SAFE_FILENAME.test(file))
-            return json(res, { error: "Paramètres invalides" }, 400, req);
-        if (fromState === toState)
-            return json(res, { ok: true }, 200, req);
-        const srcPath = path.resolve(path.join(IMAGES_DIR, token, fromState, file));
-        if (!srcPath.startsWith(path.resolve(IMAGES_DIR)))
-            return json(res, { error: "Interdit" }, 403, req);
-        // Single-frame mode: supprimer frames existantes dans toState
-        const existing = stmts.getFramesByState.all(token, toState);
-        for (const f of existing) {
-            const p = path.join(IMAGES_DIR, token, toState, f.filename);
-            if (fs.existsSync(p)) fs.unlinkSync(p);
-            stmts.deleteFrame.run(token, toState, f.filename);
-        }
-        // Déplacer le fichier sur disque
-        const destDir = path.join(IMAGES_DIR, token, toState);
-        fs.mkdirSync(destDir, { recursive: true });
-        const destPath = path.join(destDir, file);
-        if (fs.existsSync(srcPath)) fs.renameSync(srcPath, destPath);
-        // Mettre à jour la DB
-        stmts.moveFrame.run(toState, token, fromState, file);
-        broadcastFrameUpdate(token);
-        return json(res, { ok: true }, 200, req);
-    } catch (err) {
-        console.error("Move frame error:", err);
-        return json(res, { error: "Erreur lors du déplacement" }, 500, req);
-    }
-}
+// POST /upload → src/routes/upload.js (handleUpload)
+// POST /reorder → src/routes/upload.js (handleReorder)
+// POST /delete-frame → src/routes/upload.js (handleDeleteFrame)
+// POST /move-frame → src/routes/upload.js (handleMoveFrame)
 
 // GET /api/db/stats — stats DB (admin only)
 function handleDbStats(req, res) {
@@ -2112,383 +892,25 @@ async function handleDeleteUser(req, res, ctx) {
     }
 }
 
-// ── Auth route handlers ─────────────────────────────────────────
+// ── Auth route handlers — délégués à src/routes/auth.js ─────────
+// handleAuthLogin, handleAuthCallback, handleAuthLogout, handleAuthMe,
+// handleTestMode importés depuis src/routes/auth.js
+// Wrappers pour injecter rateLimit dans les handlers qui en ont besoin.
+const _handleAuthLogin = (req, res, ctx) => handleAuthLogin(req, res, ctx, rateLimit);
 
-async function handleAuthLogin(req, res, ctx) {
-    // Rate limit: 10 tentatives login par minute par IP
-    const clientIp = getClientIp(req);
-    if (rateLimit(`auth:${clientIp}`, 30, 60_000)) {
-        res.writeHead(429, { "Content-Type": "text/html; charset=utf-8" });
-        res.end("<h2>Trop de tentatives</h2><p>Réessayez dans une minute.</p>");
-        return;
-    }
-    // Cap: max 1000 états OAuth en attente (protection contre memory exhaustion)
-    if (oauthStates.size > 1000) {
-        const oldest = [...oauthStates.entries()].sort((a, b) => {
-            const ea = typeof a[1] === 'number' ? a[1] : a[1]?.expiresAt || 0;
-            const eb = typeof b[1] === 'number' ? b[1] : b[1]?.expiresAt || 0;
-            return ea - eb;
-        });
-        for (let i = 0; i < 200; i++) oauthStates.delete(oldest[i][0]);
-    }
-    const clientId = process.env.DISCORD_CLIENT_ID;
-    const redirectUri = process.env.DISCORD_REDIRECT_URI || `${BASE_URL}/auth/callback`;
-    if (!clientId) return json(res, { error: "OAuth2 non configuré" }, 500, req);
-    // Stocker le paramètre next pour redirection post-login
-    const next = ctx.url.searchParams.get('next');
-    const safeNext = (next && next.startsWith('/') && !next.startsWith('//')) ? next : null;
-    const state = crypto.randomBytes(16).toString("hex");
-    oauthStates.set(state, { expiresAt: Date.now() + 5 * 60 * 1000, next: safeNext });
-    const url = `https://discord.com/oauth2/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&scope=identify%20guilds&state=${state}`;
-    res.writeHead(302, { Location: url });
-    res.end();
-}
+// ── Permission API handlers → src/routes/permissions.js ──────────
+// handleGetPermissions, handleSetPermission, handleDeletePermission,
+// handleGetMyPermissions, handleMyToken, handleGetAvatarPerms,
+// handleSetAvatarPerm, isAvatarAllowed → src/routes/permissions.js
 
-async function handleAuthCallback(req, res, ctx) {
-    const code = ctx.url.searchParams.get('code');
-    const state = ctx.url.searchParams.get('state');
-    const stateData = oauthStates.get(state);
-    oauthStates.delete(state);
-    // Support ancien format (nombre) et nouveau format (objet)
-    const expiry = typeof stateData === 'number' ? stateData : stateData?.expiresAt;
-    const nextUrl = typeof stateData === 'object' ? stateData?.next : null;
-    if (!expiry || Date.now() > expiry) {
-        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-        res.end("<h2>Session OAuth expirée ou invalide</h2><a href='/auth/login'>Réessayer</a>");
-        return;
-    }
-    try {
-        const tokenRes = await fetch('https://discord.com/api/oauth2/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-                client_id: process.env.DISCORD_CLIENT_ID,
-                client_secret: process.env.DISCORD_CLIENT_SECRET,
-                grant_type: 'authorization_code',
-                code,
-                redirect_uri: process.env.DISCORD_REDIRECT_URI || `${BASE_URL}/auth/callback`,
-            }),
-        });
-        if (!tokenRes.ok) {
-            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-            res.end("<h2>Échec échange token OAuth</h2><a href='/auth/login'>Réessayer</a>");
-            return;
-        }
-        const { access_token } = await tokenRes.json();
-        const userRes = await fetch('https://discord.com/api/users/@me', {
-            headers: { Authorization: `Bearer ${access_token}` },
-        });
-        if (!userRes.ok) {
-            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-            res.end("<h2>Échec récupération profil</h2><a href='/auth/login'>Réessayer</a>");
-            return;
-        }
-        const discordUser = await userRes.json();
-        // Récupérer les serveurs de l'utilisateur via le scope guilds
-        let userGuildIds = [];
-        try {
-            const guildsRes = await fetch('https://discord.com/api/users/@me/guilds', {
-                headers: { Authorization: `Bearer ${access_token}` },
-            });
-            if (guildsRes.ok) {
-                const guilds = await guildsRes.json();
-                userGuildIds = guilds.map(g => g.id);
-            }
-        } catch {}
-        const role = getUserRole(discordUser.id);
-        const redirectTo = nextUrl || '/';
-        if (role === 'admin') {
-            const sessionId = createSession(discordUser, userGuildIds);
-            setSessionCookie(res, sessionId);
-            res.writeHead(302, { Location: redirectTo });
-            res.end();
-        } else if (role === 'client') {
-            const sessionId = createSession(discordUser, userGuildIds);
-            setSessionCookie(res, sessionId);
-            res.writeHead(302, { Location: redirectTo });
-            res.end();
-        } else {
-            // Unknown user → 403
-            res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-            res.end("<h2>Accès refusé</h2><p>Vous n'avez pas les permissions nécessaires pour accéder à cette interface.</p>");
-            return;
-        }
-    } catch (err) {
-        console.error("OAuth callback error:", err);
-        res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(`<h2>Erreur OAuth</h2><p>${escapeHtml(err.message)}</p><a href='/auth/login'>Réessayer</a>`);
-    }
-}
+// ── Voice Browser API handlers — délégués à src/routes/voice.js ──
+// handleGuilds, handleGuildChannels, handleGuildMembers, handleVoiceJoin,
+// handleVoiceDisconnect, handleVoiceStatus, handleFollowStatus,
+// handleVoiceFollow, handleVoiceUnfollow, handleGetAutoReconnect,
+// handleSetAutoReconnect importés depuis src/routes/voice.js.
+// Chaque handler reçoit un objet de dépendances (client, état, callbacks).
 
-async function handleAuthLogout(req, res, ctx) {
-    const cookies = parseCookies(req);
-    const signed = cookies['pngtuber_session'];
-    if (signed) {
-        const sessionId = verifyCookie(signed);
-        if (sessionId) sessions.delete(sessionId);
-    }
-    res.setHeader('Set-Cookie', 'pngtuber_session=; Path=/; HttpOnly; Max-Age=0');
-    res.writeHead(302, { Location: '/auth/login' });
-    res.end();
-}
-
-async function handleAuthMe(req, res, ctx) {
-    const session = getSession(req);
-    if (!session) return json(res, { authenticated: false }, 401, req);
-    const effectiveRole = session.testRole || session.role || 'viewer';
-    const tier = getUserTier(session.discordId);
-    return json(res, {
-        authenticated: true, username: session.username, discordId: session.discordId,
-        role: session.role || 'viewer', effectiveRole, testMode: !!session.testRole,
-        tier, tierLimits: TIER_LIMITS[tier],
-    }, 200, req);
-}
-
-// POST /api/test-mode — admin simule un rôle client (toggle)
-async function handleTestMode(req, res, ctx) {
-    if (ctx.session.role !== 'admin') return json(res, { error: "Admin uniquement" }, 403, req);
-    const body = ctx._parsedBody || JSON.parse((await readBody(req)).toString());
-    const session = getSession(req);
-    if (body.enabled) {
-        session.testRole = 'client';
-    } else {
-        delete session.testRole;
-    }
-    return json(res, { ok: true, testMode: !!session.testRole, effectiveRole: session.testRole || session.role }, 200, req);
-}
-
-// ── Permission API handlers ──────────────────────────────────────
-
-// GET /api/permissions (admin only)
-async function handleGetPermissions(req, res, ctx) {
-    return json(res, loadPermissions(), 200, req);
-}
-
-// POST /api/permissions (admin only)
-async function handleSetPermission(req, res, ctx) {
-    const body = ctx._parsedBody || JSON.parse((await readBody(req)).toString());
-    if (!body.discordId || !body.role) return json(res, { error: "discordId et role requis" }, 400, req);
-    if (!['admin', 'client', 'viewer'].includes(body.role)) return json(res, { error: "Rôle invalide" }, 400, req);
-    stmts.upsertPermission.run(
-        body.discordId, body.role,
-        ctx.session?.discordId || null,
-        body.displayName || "Unknown",
-        JSON.stringify(body.guilds || [])
-    );
-    return json(res, { ok: true }, 200, req);
-}
-
-// DELETE /api/permissions/:discordId (admin only)
-async function handleDeletePermission(req, res, ctx) {
-    stmts.deletePermission.run(ctx.params.discordId);
-    return json(res, { ok: true }, 200, req);
-}
-
-// GET /api/permissions/me (any auth)
-async function handleGetMyPermissions(req, res, ctx) {
-    const session = ctx.session || getSession(req);
-    if (!session) return json(res, { error: "Non authentifié" }, 401, req);
-    const role = getUserRole(session.discordId);
-    const row = stmts.getPermission.get(session.discordId);
-    const guilds = row ? JSON.parse(row.guilds_json || "[]") : null;
-    return json(res, { role, guilds }, 200, req);
-}
-
-// GET /api/my-token (any auth)
-async function handleMyToken(req, res, ctx) {
-    const session = ctx.session || getSession(req);
-    if (!session) return json(res, { error: "Non authentifié" }, 401, req);
-    const token = tokenFor(session.discordId);
-    return json(res, { token, displayName: session.username }, 200, req);
-}
-
-// ── Avatar permissions per server ────────────────────────────────
-
-// GET /api/avatar-permissions/:token — liste des autorisations serveur d'un user
-async function handleGetAvatarPerms(req, res, ctx) {
-    const token = ctx.params.token;
-    const rows = stmts.getAvatarPerms.all(token);
-    // Enrichir avec les noms de serveurs
-    const perms = rows.map(r => {
-        const guild = botConnected ? client.guilds.cache.get(r.guild_id) : null;
-        return { guildId: r.guild_id, guildName: guild?.name || r.guild_id, guildIcon: guild?.iconURL({ size: 64 }) || null, allowed: !!r.allowed };
-    });
-    return json(res, perms, 200, req);
-}
-
-// POST /api/avatar-permissions — set permission (token, guildId, allowed)
-async function handleSetAvatarPerm(req, res, ctx) {
-    const body = ctx._parsedBody || JSON.parse((await readBody(req)).toString());
-    if (!body.token || !body.guildId) return json(res, { error: "token et guildId requis" }, 400, req);
-    // Vérifier que le user est autorisé à modifier (admin ou propriétaire du token)
-    const isAdmin = (ctx.session?.testRole || ctx.session?.role) === 'admin';
-    if (!isAdmin) {
-        const myToken = tokenFor(ctx.session.discordId);
-        if (body.token !== myToken) return json(res, { error: "Non autorisé" }, 403, req);
-    }
-    stmts.upsertAvatarPerm.run(body.token, body.guildId, body.allowed ? 1 : 0);
-    return json(res, { ok: true }, 200, req);
-}
-
-// Vérifier si un token est autorisé sur un guild
-function isAvatarAllowed(token, guildId) {
-    if (!guildId) return true; // pas de contexte serveur → autorisé (rétrocompatibilité)
-    const row = stmts.getAvatarPerm.get(token, guildId);
-    return row ? !!row.allowed : false; // non autorisé par défaut
-}
-
-// ── Voice Browser API handlers ──────────────────────────────────
-
-// GET /api/guilds — liste des serveurs (filtré par membership pour non-admins)
-async function handleGuilds(req, res, ctx) {
-    if (!botConnected) return json(res, { error: "Bot non connecté" }, 503, req);
-    const isAdmin = (ctx.session?.testRole || ctx.session?.role) === 'admin';
-    let guilds = client.guilds.cache;
-    // Non-admin: ne montrer que les serveurs où l'utilisateur ET le bot sont présents
-    if (!isAdmin) {
-        const userGuilds = ctx.session?.userGuildIds || [];
-        guilds = guilds.filter(g => userGuilds.includes(g.id));
-    }
-    return json(res, guilds.map(g => ({
-        id: g.id, name: g.name, icon: g.iconURL({ size: 64 }), memberCount: g.memberCount
-    })), 200, req);
-}
-
-// GET /api/guilds/:guildId/channels — channels vocaux (filtré par permissions pour non-admins)
-async function handleGuildChannels(req, res, ctx) {
-    if (!botConnected) return json(res, { error: "Bot non connecté" }, 503, req);
-    const guild = client.guilds.cache.get(ctx.params.guildId);
-    if (!guild) return json(res, { error: "Serveur non trouvé" }, 404, req);
-    const isAdmin = (ctx.session?.testRole || ctx.session?.role) === 'admin';
-    const discordId = ctx.session?.discordId;
-    // Non-admin: vérifier que l'utilisateur est membre du serveur (via OAuth guilds)
-    if (!isAdmin) {
-        const userGuilds = ctx.session?.userGuildIds || [];
-        if (!userGuilds.includes(guild.id)) {
-            return json(res, { error: "Vous n'êtes pas membre de ce serveur" }, 403, req);
-        }
-    }
-    // Tenter de fetch le member pour vérifier les permissions channel par channel
-    let member = discordId ? guild.members.cache.get(discordId) : null;
-    if (!member && discordId && !isAdmin) {
-        try { member = await guild.members.fetch(discordId); } catch {}
-    }
-    const voiceChannels = guild.channels.cache
-        .filter(c => c.type === ChannelType.GuildVoice || c.type === ChannelType.GuildStageVoice)
-        .filter(c => {
-            // Admin voit tout; non-admin ne voit que les channels où il a Connect
-            if (isAdmin) return true;
-            if (!member) return true; // Si on n'a pas pu fetch le member, on montre tout (filtré au join)
-            try { return c.permissionsFor(member).has(PermissionFlagsBits.Connect); }
-            catch { return false; }
-        })
-        .sort((a, b) => a.position - b.position)
-        .map(c => ({
-            id: c.id, name: c.name, type: c.type, position: c.position,
-            members: c.members.map(m => ({
-                token: tokenFor(m.id), displayName: m.displayName || m.user.username, bot: m.user.bot
-            })),
-            botConnected: connectedChannelId === c.id
-        }));
-    return json(res, voiceChannels, 200, req);
-}
-
-// GET /api/guilds/:guildId/members (admin only)
-async function handleGuildMembers(req, res, ctx) {
-    if (!botConnected) return json(res, { error: "Bot non connecté" }, 503, req);
-    const guild = client.guilds.cache.get(ctx.params.guildId);
-    if (!guild) return json(res, { error: "Serveur non trouvé" }, 404, req);
-    const members = guild.members.cache
-        .filter(m => !m.user.bot)
-        .map(m => ({
-            discordId: m.id, displayName: m.displayName || m.user.username,
-            username: m.user.username, avatar: m.user.displayAvatarURL({ size: 64 }),
-            inVoice: !!m.voice.channelId,
-            voiceChannelName: m.voice.channel?.name || null
-        }));
-    return json(res, { members, partial: true }, 200, req);
-}
-
-// POST /api/voice/join — rejoindre un channel vocal (vérifie permissions pour non-admins)
-async function handleVoiceJoin(req, res, ctx) {
-    const body = ctx._parsedBody || JSON.parse((await readBody(req)).toString());
-    if (!body.guildId || !body.channelId) return json(res, { error: "guildId et channelId requis" }, 400, req);
-    // Vérifier permissions pour les non-admins
-    const isAdmin = (ctx.session?.testRole || ctx.session?.role) === 'admin';
-    const discordId = ctx.session?.discordId;
-    if (!isAdmin) {
-        // Vérifier que l'utilisateur est membre du serveur (via OAuth guilds)
-        const userGuilds = ctx.session?.userGuildIds || [];
-        if (!userGuilds.includes(body.guildId)) {
-            return json(res, { error: "Vous n'êtes pas membre de ce serveur" }, 403, req);
-        }
-        // Vérifier la permission Connect sur le channel spécifique
-        const guild = client.guilds.cache.get(body.guildId);
-        if (!guild) return json(res, { error: "Serveur non trouvé" }, 404, req);
-        let member = guild.members.cache.get(discordId);
-        if (!member) { try { member = await guild.members.fetch(discordId); } catch {} }
-        if (member) {
-            const channel = guild.channels.cache.get(body.channelId);
-            if (channel) {
-                try {
-                    if (!channel.permissionsFor(member).has(PermissionFlagsBits.Connect)) {
-                        return json(res, { error: "Pas de permission pour rejoindre ce channel" }, 403, req);
-                    }
-                } catch {}
-            }
-        }
-    }
-    try {
-        const result = await connectToVoiceChannel(body.guildId, body.channelId);
-        return json(res, { ok: true, guild: result.guild.name, channel: result.channel.name, memberCount: result.members.length }, 200, req);
-    } catch (err) {
-        console.error("Voice join error:", err);
-        return json(res, { error: "Impossible de rejoindre le canal vocal" }, 400, req);
-    }
-}
-
-// POST /api/voice/disconnect — déconnecter le bot du vocal
-async function handleVoiceDisconnect(req, res, ctx) {
-    if (!currentConnection) return json(res, { error: "Pas connecté" }, 400, req);
-    disconnectVoice();
-    return json(res, { ok: true }, 200, req);
-}
-
-// GET /api/auto-reconnect — lire l'état de l'option
-function handleGetAutoReconnect(req, res) {
-    return json(res, { enabled: getAutoReconnect() }, 200, req);
-}
-
-// POST /api/auto-reconnect — activer/désactiver l'option
-async function handleSetAutoReconnect(req, res, ctx) {
-    const body = ctx._parsedBody || JSON.parse((await readBody(req)).toString());
-    setAutoReconnect(!!body.enabled);
-    return json(res, { ok: true, enabled: getAutoReconnect() }, 200, req);
-}
-
-// GET /api/voice/status (any auth)
-async function handleVoiceStatus(req, res, ctx) {
-    if (!currentConnection || !connectedGuildId) {
-        return json(res, { connected: false }, 200, req);
-    }
-    const guild = client.guilds.cache.get(connectedGuildId);
-    const channel = guild?.channels.cache.get(connectedChannelId);
-    return json(res, {
-        connected: true,
-        guildId: connectedGuildId, guildName: guild?.name,
-        channelId: connectedChannelId, channelName: channel?.name,
-        members: channel ? channel.members.filter(m => !m.user.bot).map(m => ({
-            token: tokenFor(m.id), displayName: m.displayName || m.user.username
-        })) : [],
-        following: followTarget ? { token: tokenFor(followTarget.discordId), displayName: followTarget.displayName } : null,
-        followError: followError && (Date.now() - followError.ts < 10000) ? followError : null,
-    }, 200, req);
-    // Effacer l'erreur après lecture (une seule notification)
-    if (followError && (Date.now() - followError.ts >= 5000)) followError = null;
-}
-
-// ── Mode suivi — routes API ──────────────────────────────────
-
+// ── Mode suivi — broadcast WebSocket ────────────────────────────
 function broadcastFollowStatus() {
     const msg = JSON.stringify({
         type: 'follow-status',
@@ -2501,41 +923,28 @@ function broadcastFollowError(channelName, userName) {
     const msg = JSON.stringify({ type: 'follow-error', channelName, userName });
     for (const c of wsClients) { if (c.ws.readyState === 1) c.ws.send(msg); }
 }
+function setFollowTarget(target) { followTarget = target; }
 
-// POST /api/voice/follow { token } — activer le mode suivi
-async function handleVoiceFollow(req, res, ctx) {
-    const body = await parseJsonBody(req);
-    const token = body?.token;
-    if (!token) return json(res, { error: "token requis" }, 400, req);
-    const discordId = uidFor(token);
-    if (!discordId) return json(res, { error: "token inconnu" }, 404, req);
-    // Trouver le membre dans le canal vocal actuel
-    let displayName = token;
-    if (connectedGuildId) {
-        const guild = client.guilds.cache.get(connectedGuildId);
-        const member = guild?.members.cache.get(discordId);
-        if (member) displayName = member.displayName || member.user.username;
-    }
-    followTarget = { discordId, requestedBy: ctx.session?.discordId, displayName };
-    broadcastFollowStatus();
-    console.log(`👣 Mode suivi activé: ${displayName}`);
-    return json(res, { ok: true, following: { token, displayName } }, 200, req);
+// Objet d'état vocal passé aux handlers voice (évite les closures imbriquées)
+function getVoiceDeps() {
+    return {
+        client, botConnected, connectedGuildId, connectedChannelId,
+        currentConnection, followTarget, followError,
+        connectToVoiceChannel, disconnectVoice,
+        broadcastFollowStatus, broadcastFollowError, setFollowTarget,
+    };
 }
 
-// POST /api/voice/unfollow — désactiver le mode suivi
-async function handleVoiceUnfollow(req, res, ctx) {
-    followTarget = null;
-    broadcastFollowStatus();
-    console.log('👣 Mode suivi désactivé');
-    return json(res, { ok: true }, 200, req);
-}
-
-// GET /api/voice/follow-status — état actuel du suivi
-async function handleFollowStatus(req, res, ctx) {
-    return json(res, {
-        following: followTarget ? { token: tokenFor(followTarget.discordId), displayName: followTarget.displayName } : null,
-    }, 200, req);
-}
+// Wrappers qui injectent les dépendances d'état courant
+const _handleGuilds         = (req, res, ctx) => handleGuilds(req, res, ctx, getVoiceDeps());
+const _handleGuildChannels  = (req, res, ctx) => handleGuildChannels(req, res, ctx, getVoiceDeps());
+const _handleGuildMembers   = (req, res, ctx) => handleGuildMembers(req, res, ctx, getVoiceDeps());
+const _handleVoiceJoin      = (req, res, ctx) => handleVoiceJoin(req, res, ctx, getVoiceDeps());
+const _handleVoiceDisconnect= (req, res, ctx) => handleVoiceDisconnect(req, res, ctx, getVoiceDeps());
+const _handleVoiceStatus    = (req, res, ctx) => handleVoiceStatus(req, res, ctx, getVoiceDeps());
+const _handleFollowStatus   = (req, res, ctx) => handleFollowStatus(req, res, ctx, getVoiceDeps());
+const _handleVoiceFollow    = (req, res, ctx) => handleVoiceFollow(req, res, ctx, getVoiceDeps());
+const _handleVoiceUnfollow  = (req, res, ctx) => handleVoiceUnfollow(req, res, ctx, getVoiceDeps());
 
 // ════════════════════════════════════════════════════════════════
 // VIEWER SESSIONS — tokens sécurisés pour les URLs OBS
@@ -2565,204 +974,15 @@ async function handleResolveViewerSession(req, res, ctx) {
 }
 
 // ════════════════════════════════════════════════════════════════
-// DEVICE AUTH FLOW — authentification mini-agent local
+// DEVICE AUTH FLOW — délégué à src/routes/device.js
 // ════════════════════════════════════════════════════════════════
-const deviceAuthRequests = new Map(); // deviceCode → { userCode, discordId?, status, deviceName, expiresAt, appToken? }
-
-function generateUserCode() {
-    // Code 8 chars lisible: XXXX-XXXX (alphanum majuscules sans ambiguïté)
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // pas de 0/O/1/I
-    let code = '';
-    const bytes = crypto.randomBytes(8);
-    for (let i = 0; i < 8; i++) code += chars[bytes[i] % chars.length];
-    return code.slice(0, 4) + '-' + code.slice(4);
-}
-
-// POST /api/device/authorize — l'app demande un code
-async function handleDeviceAuthorize(req, res, ctx) {
-    const clientIp = getClientIp(req);
-    if (rateLimit(`device:${clientIp}`, 5, 60_000))
-        return json(res, { error: "Trop de requêtes" }, 429, req);
-    // Cap mémoire : max 500 device codes en attente
-    if (deviceAuthRequests.size > 500) {
-        const now = Date.now();
-        for (const [k, v] of deviceAuthRequests) {
-            if (now > v.expiresAt) deviceAuthRequests.delete(k);
-        }
-    }
-    let body = {};
-    try { body = await parseJsonBody(req); } catch {}
-    const deviceCode = crypto.randomBytes(32).toString('hex');
-    const userCode = generateUserCode();
-    const deviceName = typeof body.deviceName === 'string' ? body.deviceName.slice(0, 64) : 'Agent';
-    deviceAuthRequests.set(deviceCode, {
-        userCode, discordId: null, status: 'pending',
-        deviceName, expiresAt: Date.now() + 5 * 60 * 1000,
-    });
-    return json(res, {
-        deviceCode, userCode, verifyUrl: `${BASE_URL}/api/device/verify?user_code=${userCode}`,
-        expiresIn: 300, interval: 5,
-    }, 200, req);
-}
-
-// POST /api/device/poll — l'app poll le statut
-async function handleDevicePoll(req, res, ctx) {
-    const clientIp = getClientIp(req);
-    if (rateLimit(`poll:${clientIp}`, 30, 60_000))
-        return json(res, { error: "Trop de requêtes" }, 429, req);
-    const body = await parseJsonBody(req);
-    const entry = deviceAuthRequests.get(body?.deviceCode);
-    if (!entry) return json(res, { status: 'expired' }, 200, req);
-    if (Date.now() > entry.expiresAt) {
-        deviceAuthRequests.delete(body.deviceCode);
-        return json(res, { status: 'expired' }, 200, req);
-    }
-    if (entry.status === 'denied') {
-        deviceAuthRequests.delete(body.deviceCode);
-        return json(res, { status: 'denied' }, 200, req);
-    }
-    if (entry.status === 'authorized' && entry.appToken) {
-        const token = entry.appToken;
-        const userToken = tokenFor(entry.discordId);
-        const tier = getUserTier(entry.discordId);
-        deviceAuthRequests.delete(body.deviceCode);
-        return json(res, { status: 'authorized', appToken: token, userToken, tier }, 200, req);
-    }
-    return json(res, { status: 'pending' }, 200, req);
-}
-
-// GET /api/device/verify — page HTML de vérification
-async function handleDeviceVerifyPage(req, res, ctx) {
-    const userCode = ctx.url.searchParams.get('user_code') || '';
-    const html = `<!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Autoriser l'application</title>
-<style>
-  body{font-family:system-ui,-apple-system,sans-serif;background:#1a1a2e;color:#e0e0e0;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}
-  .card{background:#16213e;border-radius:16px;padding:2rem;max-width:420px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.3)}
-  h1{font-size:1.4rem;margin-bottom:.5rem}
-  .code{font-size:2rem;font-weight:bold;letter-spacing:.3em;color:#7c3aed;background:#0f0f23;padding:.8rem 1.5rem;border-radius:8px;margin:1.5rem 0;font-family:monospace}
-  .device{color:#a78bfa;font-weight:600}
-  .btn{display:inline-block;padding:.7rem 2rem;border-radius:8px;border:none;font-size:1rem;cursor:pointer;margin:.3rem;font-weight:600;transition:all .2s}
-  .approve{background:#7c3aed;color:#fff}.approve:hover{background:#6d28d9}
-  .deny{background:#374151;color:#9ca3af}.deny:hover{background:#4b5563}
-  .result{margin-top:1rem;padding:1rem;border-radius:8px;display:none}
-  .success{background:#064e3b;color:#34d399;display:block}
-  .error{background:#450a0a;color:#f87171;display:block}
-  input{background:#0f0f23;border:2px solid #374151;color:#e0e0e0;padding:.7rem 1rem;border-radius:8px;font-size:1.2rem;text-align:center;letter-spacing:.2em;width:80%;font-family:monospace;text-transform:uppercase}
-  input:focus{border-color:#7c3aed;outline:none}
-</style></head><body>
-<div class="card">
-  <h1>Autoriser l'application</h1>
-  <p>Entrez le code affiché dans votre application :</p>
-  <div><input id="codeInput" type="text" maxlength="9" placeholder="XXXX-XXXX" value="${escapeHtml(userCode)}"></div>
-  <div id="deviceInfo" style="margin:1rem 0;display:none">
-    <p>L'application <span class="device" id="deviceName"></span> demande l'accès à votre compte.</p>
-    <p style="color:#9ca3af;font-size:.9rem">Cela lui permettra de contrôler vos avatars PNGTuber.</p>
-  </div>
-  <div id="actions" style="margin-top:1rem">
-    <button class="btn approve" onclick="verify()">Vérifier</button>
-  </div>
-  <div id="result" class="result"></div>
-</div>
-<script>
-const input = document.getElementById('codeInput');
-input.addEventListener('input', e => {
-    let v = e.target.value.replace(/[^A-Za-z0-9]/g,'').toUpperCase();
-    if(v.length>4) v=v.slice(0,4)+'-'+v.slice(4,8);
-    e.target.value=v;
-});
-async function verify() {
-    const code = input.value.trim();
-    if(code.length<9) return;
-    try {
-        const r = await fetch('/api/device/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userCode:code,action:'check'})});
-        const d = await r.json();
-        if(d.found) {
-            document.getElementById('deviceName').textContent=d.deviceName;
-            document.getElementById('deviceInfo').style.display='block';
-            document.getElementById('actions').innerHTML='<button class="btn approve" onclick="approve()">Autoriser</button><button class="btn deny" onclick="deny()">Refuser</button>';
-        } else {
-            showResult('Code invalide ou expiré','error');
-        }
-    } catch(e) { showResult('Erreur réseau','error'); }
-}
-async function approve() { await submit('approve'); }
-async function deny() { await submit('deny'); }
-async function submit(action) {
-    const code = input.value.trim();
-    try {
-        const r = await fetch('/api/device/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userCode:code,action})});
-        const d = await r.json();
-        if(d.ok) showResult(action==='approve'?'Application autorisée ! Vous pouvez fermer cette page.':'Accès refusé.',action==='approve'?'success':'error');
-        else showResult(d.error||'Erreur','error');
-    } catch(e) { showResult('Erreur réseau','error'); }
-}
-function showResult(msg,cls) {
-    const el = document.getElementById('result');
-    el.textContent=msg; el.className='result '+cls;
-    document.getElementById('actions').style.display='none';
-}
-if(input.value.length>=9) verify();
-</script></body></html>`;
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...securityHeaders() });
-    res.end(html);
-}
-
-// POST /api/device/verify — confirmer/refuser
-async function handleDeviceVerifySubmit(req, res, ctx) {
-    const clientIp = getClientIp(req);
-    if (rateLimit(`device-verify:${clientIp}`, 10, 60_000))
-        return json(res, { error: "Trop de tentatives, réessayez dans 1 minute" }, 429, req);
-    const body = await parseJsonBody(req);
-    const userCode = typeof body?.userCode === 'string' ? body.userCode.toUpperCase().trim() : '';
-    const action = body?.action;
-    // Chercher le device code par user code
-    let found = null, foundKey = null;
-    for (const [k, v] of deviceAuthRequests) {
-        if (v.userCode === userCode && v.status === 'pending' && Date.now() < v.expiresAt) {
-            found = v; foundKey = k; break;
-        }
-    }
-    if (!found) return json(res, { found: false, error: "Code invalide ou expiré" }, 200, req);
-    if (action === 'check') {
-        return json(res, { found: true, deviceName: found.deviceName }, 200, req);
-    }
-    if (action === 'deny') {
-        found.status = 'denied';
-        return json(res, { ok: true }, 200, req);
-    }
-    if (action === 'approve') {
-        // Vérifier le tier (mini-app requiert premium)
-        const tier = getUserTier(ctx.session.discordId);
-        if (tier === 'free') {
-            return json(res, { ok: false, error: "Fonctionnalité premium requise pour la mini-application" }, 403, req);
-        }
-        // Générer un app token
-        const rawToken = crypto.randomBytes(32).toString('hex');
-        const hash = crypto.createHash('sha256').update(rawToken).digest('hex');
-        stmts.createAppToken.run(hash, ctx.session.discordId, found.deviceName);
-        found.status = 'authorized';
-        found.discordId = ctx.session.discordId;
-        found.appToken = rawToken; // token brut retourné une seule fois via poll
-        return json(res, { ok: true }, 200, req);
-    }
-    return json(res, { error: "Action invalide" }, 400, req);
-}
-
-// GET /api/app-tokens — liste des tokens API de l'utilisateur
-async function handleListAppTokens(req, res, ctx) {
-    const rows = stmts.getAppTokensByUser.all(ctx.session.discordId);
-    return json(res, { tokens: rows }, 200, req);
-}
-
-// DELETE /api/app-tokens/:id — révoquer un token API
-async function handleRevokeAppToken(req, res, ctx) {
-    const id = parseInt(ctx.params.id, 10);
-    if (isNaN(id)) return json(res, { error: "ID invalide" }, 400, req);
-    stmts.revokeAppToken.run(id, ctx.session.discordId);
-    return json(res, { ok: true }, 200, req);
-}
+// deviceAuthRequests, handleDeviceAuthorize, handleDevicePoll,
+// handleDeviceVerifyPage, handleDeviceVerifySubmit,
+// handleListAppTokens, handleRevokeAppToken importés depuis src/routes/device.js.
+// Wrappers pour injecter rateLimit dans les handlers qui en ont besoin.
+const _handleDeviceAuthorize    = (req, res, ctx) => handleDeviceAuthorize(req, res, ctx, rateLimit);
+const _handleDevicePoll         = (req, res, ctx) => handleDevicePoll(req, res, ctx, rateLimit);
+const _handleDeviceVerifySubmit = (req, res, ctx) => handleDeviceVerifySubmit(req, res, ctx, rateLimit);
 
 // ════════════════════════════════════════════════════════════════
 // SESSIONS PNGTUBER — sessions collaboratives
@@ -3124,11 +1344,54 @@ async function respond(action) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// WRAPPERS — injection des dépendances dans les handlers extraits
+// ════════════════════════════════════════════════════════════════
+
+// isAvatarAllowed : wrapper local autour de src/routes/permissions.js
+// Utilisé dans handleFrames (ci-dessus) et passé à initBot.
+function isAvatarAllowed(token, guildId) {
+    return isAvatarAllowedFromModule(stmts, token, guildId);
+}
+
+// Dépendances communes pour les handlers config, permissions, upload, emotion
+function getConfigDeps()      { return { stmts, isKnownToken, broadcastConfigUpdate }; }
+function getPermissionsDeps() { return { stmts, client, botConnected }; }
+function getUploadDeps()      { return { stmts, db, IMAGES_DIR, rateLimit, getClientIp, isKnownToken, broadcastFrameUpdate }; }
+function getEmotionDeps()     { return { isKnownToken }; }
+
+// Wrappers handlers config
+const _handleGetUserConfig  = (req, res, ctx) => handleGetUserConfig(req, res, ctx, getConfigDeps());
+const _handlePostUserConfig = (req, res, ctx) => handlePostUserConfig(req, res, ctx, getConfigDeps());
+// uidToToken n'est pas un vrai Map itérable — on reconstruit un itérable depuis userLevels
+const _handleKnownUsers = (req, res, ctx) => {
+    const activeUidToToken = [...userLevels.keys()].map(uid => [uid, tokenFor(uid)]);
+    return handleKnownUsers(req, res, ctx, { stmts, uidToToken: activeUidToToken });
+};
+const _handleBotToken       = (req, res, ctx) => handleBotToken(req, res, ctx, { setEnvKey });
+
+// Wrappers handlers permissions
+const _handleGetPermissions    = (req, res, ctx) => handleGetPermissions(req, res, ctx, getPermissionsDeps());
+const _handleSetPermission     = (req, res, ctx) => handleSetPermission(req, res, ctx, getPermissionsDeps());
+const _handleDeletePermission  = (req, res, ctx) => handleDeletePermission(req, res, ctx, getPermissionsDeps());
+const _handleGetMyPermissions  = (req, res, ctx) => handleGetMyPermissions(req, res, ctx, getPermissionsDeps());
+const _handleGetAvatarPerms    = (req, res, ctx) => handleGetAvatarPerms(req, res, ctx, getPermissionsDeps());
+const _handleSetAvatarPerm     = (req, res, ctx) => handleSetAvatarPerm(req, res, ctx, getPermissionsDeps());
+
+// Wrappers handlers upload
+const _handleUpload      = (req, res, ctx) => handleUpload(req, res, ctx, getUploadDeps());
+const _handleReorder     = (req, res, ctx) => handleReorder(req, res, ctx, { stmts, db, isKnownToken });
+const _handleDeleteFrame = (req, res, ctx) => handleDeleteFrame(req, res, ctx, { stmts, IMAGES_DIR, isKnownToken, broadcastFrameUpdate });
+const _handleMoveFrame   = (req, res, ctx) => handleMoveFrame(req, res, ctx, { stmts, IMAGES_DIR, isKnownToken, broadcastFrameUpdate });
+
+// Wrappers handlers emotion
+const _handleSetEmotion = (req, res, ctx) => handleSetEmotion(req, res, ctx, getEmotionDeps());
+
+// ════════════════════════════════════════════════════════════════
 // ENREGISTREMENT DES ROUTES
 // ════════════════════════════════════════════════════════════════
 
-// Auth routes (publiques)
-route('GET', '/auth/login', handleAuthLogin);
+// Auth routes (publiques) — handlers depuis src/routes/auth.js
+route('GET', '/auth/login', _handleAuthLogin);
 route('GET', '/auth/callback', handleAuthCallback);
 route('GET', '/auth/logout', handleAuthLogout);
 route('GET', '/auth/me', handleAuthMe);
@@ -3140,8 +1403,8 @@ route('GET', '/status', handleStatus);
 route('GET', '/bot-info', handleBotInfo);
 route('GET', '/images/*', handleImages);
 route('GET', '/frames/:token', handleFrames);
-route('GET', '/user-config/:token', handleGetUserConfig);
-route('GET', '/known-users', handleKnownUsers);
+route('GET', '/user-config/:token', _handleGetUserConfig);
+route('GET', '/known-users', _handleKnownUsers);
 route('GET', '/api/viewer-session/:sessionId', handleResolveViewerSession);
 route('GET', '/api/debug-log', requireAuth, requireAdmin, async (req, res, ctx) => {
     // Retourne les logs debug du viewer (ring buffer)
@@ -3153,70 +1416,67 @@ route('GET', '/api/debug-log', requireAuth, requireAdmin, async (req, res, ctx) 
 
 // Émotion manuelle (raccourcis clavier / agent local)
 route('GET', '/api/emotion/:token', handleGetEmotion);
-route('POST', '/api/emotion/:token', requireAuth, requireClientOrAdmin, handleSetEmotion);
+route('POST', '/api/emotion/:token', requireAuth, requireClientOrAdmin, _handleSetEmotion);
+
+// Routes calibration vocale (save/delete fingerprint — profil vocal est passif/automatique)
+registerCalibrationRoutes({
+    route, requireAuth, requireClientOrAdmin,
+    stmts, isKnownToken, invalidateAudioFpCache,
+});
 
 // Viewer session (auth requise pour créer, public pour résoudre)
 route('POST', '/api/viewer-session', requireAuth, requireClientOrAdmin, handleCreateViewerSession);
 
 // Routes protégées — client-or-admin (owner can edit own data)
-route('POST', '/upload', requireAuth, parseBodyToken, requireClientOrAdmin, loadTier, handleUpload);
-route('POST', '/reorder', requireAuth, parseBodyToken, requireClientOrAdmin, handleReorder);
-route('POST', '/delete-frame', requireAuth, parseBodyToken, requireClientOrAdmin, handleDeleteFrame);
-route('POST', '/move-frame', requireAuth, parseBodyToken, requireClientOrAdmin, handleMoveFrame);
-route('POST', '/user-config/:token', requireAuth, requireClientOrAdmin, loadTier, handlePostUserConfig);
+route('POST', '/upload', requireAuth, parseBodyToken, requireClientOrAdmin, loadTier, _handleUpload);
+route('POST', '/reorder', requireAuth, parseBodyToken, requireClientOrAdmin, _handleReorder);
+route('POST', '/delete-frame', requireAuth, parseBodyToken, requireClientOrAdmin, _handleDeleteFrame);
+route('POST', '/move-frame', requireAuth, parseBodyToken, requireClientOrAdmin, _handleMoveFrame);
+route('POST', '/user-config/:token', requireAuth, requireClientOrAdmin, loadTier, _handlePostUserConfig);
 
-// Calibration routes
-route('POST', '/calibration/:token/reset', requireAuth, requireClientOrAdmin, handleCalibrationReset);
-route('POST', '/calibration/:token/auto-thresholds', requireAuth, requireClientOrAdmin, handleAutoThresholds);
-route('POST', '/calibration/:token/auto-emotions', requireAuth, requireClientOrAdmin, handleAutoEmotions);
-
-// Fingerprint recording routes (premium only)
-route('POST', '/calibration/:token/record-start', requireAuth, requireClientOrAdmin, loadTier, requirePremium, handleRecordStart);
-route('POST', '/calibration/:token/record-stop', requireAuth, requireClientOrAdmin, loadTier, requirePremium, handleRecordStop);
-route('POST', '/calibration/:token/save-fingerprint', requireAuth, requireClientOrAdmin, loadTier, requirePremium, handleSaveFingerprint);
-route('DELETE', '/calibration/:token/fingerprint/:emotionKey', requireAuth, requireClientOrAdmin, loadTier, requirePremium, handleDeleteFingerprint);
+// Calibration routes — archivées dans src/bot/calibration.js (module dormant, non importé)
 
 // Routes protégées — admin only
-route('POST', '/bot-token', requireAuth, requireAdmin, handleBotToken);
+route('POST', '/bot-token', requireAuth, requireAdmin, _handleBotToken);
 route('POST', '/delete-user/:token', requireAuth, requireAdmin, handleDeleteUser);
 
 // Permission API
-route('GET', '/api/permissions/me', requireAuth, handleGetMyPermissions);
-route('GET', '/api/permissions', requireAuth, requireAdmin, handleGetPermissions);
-route('POST', '/api/permissions', requireAuth, requireAdmin, handleSetPermission);
-route('DELETE', '/api/permissions/:discordId', requireAuth, requireAdmin, handleDeletePermission);
+route('GET', '/api/permissions/me', requireAuth, _handleGetMyPermissions);
+route('GET', '/api/permissions', requireAuth, requireAdmin, _handleGetPermissions);
+route('POST', '/api/permissions', requireAuth, requireAdmin, _handleSetPermission);
+route('DELETE', '/api/permissions/:discordId', requireAuth, requireAdmin, _handleDeletePermission);
 route('GET', '/api/my-token', requireAuth, handleMyToken);
 
 // Avatar permissions per server
-route('GET', '/api/avatar-permissions/:token', requireAuth, handleGetAvatarPerms);
-route('POST', '/api/avatar-permissions', requireAuth, handleSetAvatarPerm);
+route('GET', '/api/avatar-permissions/:token', requireAuth, _handleGetAvatarPerms);
+route('POST', '/api/avatar-permissions', requireAuth, _handleSetAvatarPerm);
 
-// Voice Browser API
-route('GET', '/api/guilds/:guildId/channels', requireAuth, handleGuildChannels);
-route('GET', '/api/guilds/:guildId/members', requireAuth, requireAdmin, handleGuildMembers);
-route('GET', '/api/guilds', requireAuth, handleGuilds);
-route('POST', '/api/voice/join', requireAuth, handleVoiceJoin);
-route('POST', '/api/voice/disconnect', requireAuth, requireAdmin, handleVoiceDisconnect);
-route('GET', '/api/voice/status', requireAuth, handleVoiceStatus);
+// Voice Browser API — handlers depuis src/routes/voice.js (via wrappers)
+route('GET', '/api/guilds/:guildId/channels', requireAuth, _handleGuildChannels);
+route('GET', '/api/guilds/:guildId/members', requireAuth, requireAdmin, _handleGuildMembers);
+route('GET', '/api/guilds', requireAuth, _handleGuilds);
+route('POST', '/api/voice/join', requireAuth, _handleVoiceJoin);
+route('POST', '/api/voice/disconnect', requireAuth, requireAdmin, _handleVoiceDisconnect);
+route('GET', '/api/voice/status', requireAuth, _handleVoiceStatus);
 
-// Auto-reconnect
+// Auto-reconnect — handlers depuis src/routes/voice.js
 route('GET', '/api/auto-reconnect', requireAuth, requireAdmin, handleGetAutoReconnect);
 route('POST', '/api/auto-reconnect', requireAuth, requireAdmin, handleSetAutoReconnect);
 
-// Follow mode
-route('POST', '/api/voice/follow', requireAuth, requireAdmin, handleVoiceFollow);
-route('POST', '/api/voice/unfollow', requireAuth, requireAdmin, handleVoiceUnfollow);
-route('GET', '/api/voice/follow-status', requireAuth, handleFollowStatus);
+// Follow mode — handlers depuis src/routes/voice.js (via wrappers)
+route('POST', '/api/voice/follow', requireAuth, requireAdmin, _handleVoiceFollow);
+route('POST', '/api/voice/unfollow', requireAuth, requireAdmin, _handleVoiceUnfollow);
+route('GET', '/api/voice/follow-status', requireAuth, _handleFollowStatus);
 
 // DB Browser API (admin only)
 route('GET', '/api/db/stats', requireAuth, requireAdmin, handleDbStats);
 route('GET', '/api/db/frames', requireAuth, requireAdmin, handleDbFrames);
 
-// ── Device Auth (mini-agent local) ──
-route('POST', '/api/device/authorize', handleDeviceAuthorize);
-route('POST', '/api/device/poll', handleDevicePoll);
+// ── Device Auth (mini-agent local) — handlers depuis src/routes/device.js ──
+route('POST', '/api/device/authorize', _handleDeviceAuthorize);
+route('POST', '/api/device/poll', _handleDevicePoll);
 route('GET', '/api/device/verify', requireAuth, handleDeviceVerifyPage);
-route('POST', '/api/device/verify', requireAuth, handleDeviceVerifySubmit);
+route('POST', '/api/device/verify', requireAuth, _handleDeviceVerifySubmit);
 route('GET', '/api/app-tokens', requireAuth, handleListAppTokens);
 route('DELETE', '/api/app-tokens/:id', requireAuth, handleRevokeAppToken);
 
@@ -3255,7 +1515,14 @@ route('GET', '/invite/:invitationId', handleInvitePage);
 // ════════════════════════════════════════════════════════════════
 // HTTP SERVER
 // ════════════════════════════════════════════════════════════════
-const AUTH_PAGES = ['/index.html', '/positioner.html', '/']; // pages nécessitant auth (admin ou client)
+// REACT BUILD : si dist/index.html existe, l'app React est buildée.
+// On la sert en priorité pour / et les assets Vite (/assets/*).
+// viewer.html, styles.css restent dans SOURCE_ROOT (usage OBS standalone).
+// positioner.html supprimé — remplacé par le composant React /positioner.
+const DIST_ROOT  = path.join(SOURCE_ROOT, 'dist');
+const REACT_BUILT = fs.existsSync(path.join(DIST_ROOT, 'index.html'));
+
+const AUTH_PAGES = ['/index.html', '/']; // pages nécessitant auth (admin ou client)
 const CLIENT_PAGES = ['/client.html']; // redirige vers / (unifié)
 
 httpServer = http.createServer(async (req, res) => {
@@ -3297,11 +1564,27 @@ httpServer = http.createServer(async (req, res) => {
         res.end();
         return;
     }
-    const fp = path.resolve(path.join(STATIC_ROOT, pathname));
-    if (!fp.startsWith(path.resolve(STATIC_ROOT))) {
-        res.writeHead(403); res.end(); return;
+    // ── Résolution du fichier statique ──────────────────────────
+    // 1. Assets Vite (dist/assets/*) — servis depuis DIST_ROOT
+    if (REACT_BUILT && pathname.startsWith('/assets/')) {
+        const fpAsset = path.resolve(path.join(DIST_ROOT, pathname));
+        if (fpAsset.startsWith(path.resolve(DIST_ROOT)) && serveFile(res, fpAsset, req)) return;
     }
-    if (serveFile(res, fp, req)) return;
+    // 2. Page racine "/" → dist/index.html (React) en priorité absolue.
+    //    Empêche tout legacy index.html à la racine du repo de prendre le pas sur le build React.
+    if (REACT_BUILT && pathname === "/index.html") {
+        const fpSpa = path.join(DIST_ROOT, 'index.html');
+        if (serveFile(res, fpSpa, req)) return;
+    }
+    // 3. Fichiers physiques depuis SOURCE_ROOT (styles.css, viewer.html, viewer.js, images/, etc.)
+    const fpReal = path.resolve(path.join(STATIC_ROOT, pathname));
+    if (!fpReal.startsWith(path.resolve(STATIC_ROOT))) { res.writeHead(403); res.end(); return; }
+    if (serveFile(res, fpReal, req)) return;
+    // 4. SPA fallback React : route inconnue → dist/index.html (routing client-side)
+    if (REACT_BUILT) {
+        const fpSpa = path.join(DIST_ROOT, 'index.html');
+        if (serveFile(res, fpSpa, req)) return;
+    }
     res.writeHead(404);
     res.end("Not found");
 }).listen(PORT, () => {
@@ -3310,7 +1593,7 @@ httpServer = http.createServer(async (req, res) => {
     console.log(`  └─ API data  : ${BASE_URL}/levels`);
     if (AUTH_ENABLED) console.log(`  └─ Auth      : OAuth2 Discord activé`);
     else console.log(`  ⚠ Auth      : DÉSACTIVÉE — toutes les routes sont publiques (configurer DISCORD_CLIENT_ID pour sécuriser)`);
-    if (!process.env.BASE_URL && !process.env.PNGTUBER_NO_BROWSER) openDefaultBrowser(`http://localhost:${PORT}/index.html`);
+    if (!process.env.BASE_URL && !process.env.PNGTUBER_NO_BROWSER) openDefaultBrowser(`http://localhost:${PORT}`);
     // GC des viewer sessions expirées (toutes les 60s, en background)
     setInterval(() => {
         const now = Date.now();
@@ -3425,6 +1708,8 @@ setInterval(() => {
             db: d.db, rms: d.rms, freq: d.freq,
             freqDelta: d.freqDelta || { low: 0, mid: 0, high: 0 },
             zcr: d.zcr || 0, centroid: d.centroid || 0, energyVar: d.energyVar || 0,
+            formants: d.formants || { f1: 0, f2: 0, f3: 0 },
+            voiceProfileN: (getVoiceStats(uid)?.n || 0),
             detectedEmotion: manualEmotion.get(tk)?.emotion || d.detectedEmotion || null,
             state: smoothAndClassifyState(tk, d.db),
             speaking: d.speaking, displayName: d.displayName, updated: d.updated,
@@ -3441,6 +1726,9 @@ setInterval(() => {
                     mid: Math.round(bl.freqStd.mid * 1000) / 1000,
                     high: Math.round(bl.freqStd.high * 1000) / 1000,
                 },
+                formantMean: bl.formantMean || null,
+                formantStd:  bl.formantStd  || null,
+                formantSampleCount: bl.formantSampleCount || 0,
                 sampleCount: bl.sampleCount,
             } : null,
         };
@@ -3489,304 +1777,42 @@ function broadcastFrameUpdate(token) {
     }
 }
 
+// ── Compatibilité tokenToUid/uidToToken ────────────────────────
+// Proxies vers les fonctions du tokenService (tokenFor/uidFor).
+// Supporte .get() et .delete() (delete = no-op sur le module, ok pour le GC local).
+const tokenToUid = {
+    get: (token) => uidFor(token),
+    has: (token) => !!uidFor(token),
+    delete: (_token) => {}, // le module gère son propre GC
+};
+const uidToToken = {
+    get: (userId) => tokenFor(userId),
+    has: (userId) => true, // tokenFor crée le token si nécessaire
+    delete: (_userId) => {},
+};
+
 // ════════════════════════════════════════════════════════════════
-// FFT
+// FFT + AUDIO PIPELINE — délégués à src/bot/audio.js
 // ════════════════════════════════════════════════════════════════
-function computeFreqBands(buffer) {
-    // FFT: transforme le signal temporel en spectre fréquentiel.
-    // On calcule ensuite une énergie moyenne par bande (low/mid/high) + centroïde spectral.
-    if (buffer.length < AUDIO.fftSize) return { low: 0, mid: 0, high: 0, centroid: 0 };
-    try {
-        const mags = fftUtil.fftMag(fft(buffer.slice(0, AUDIO.fftSize))),
-            binHz = AUDIO.sampleRate / AUDIO.fftSize,
-            result = {};
-        // binHz = résolution fréquentielle d'un bin FFT.
-        // Exemple: 48000/1024 ≈ 46.875 Hz par bin.
-        for (const [name, band] of Object.entries(AUDIO.freqBands)) {
-            let sum = 0,
-                count = 0;
-            for (
-                let i = Math.floor(band.min / binHz);
-                i <= Math.ceil(band.max / binHz) && i < mags.length;
-                i++
-            ) {
-                sum += mags[i];
-                count++;
-            }
-            result[name] = count ? Math.round((sum / count) * 1000) / 1000 : 0;
-        }
-        // Centroïde spectral : centre de gravité fréquentiel (Hz)
-        let wSum = 0, mSum = 0;
-        for (let i = 0; i < mags.length; i++) {
-            wSum += mags[i] * (i * binHz);
-            mSum += mags[i];
-        }
-        result.centroid = mSum > 0 ? Math.round(wSum / mSum) : 0;
-        return result;
-    } catch {
-        return { low: 0, mid: 0, high: 0, centroid: 0 };
-    }
+// computeFreqBands, subscribeUser, loadBaselineFromConfig,
+// startBaselinePersistence importés depuis src/bot/audio.js.
+
+// Démarrer la sauvegarde périodique de la baseline vocale (toutes les 60s)
+startBaselinePersistence(stmts.getUserConfig.get.bind(stmts.getUserConfig), stmts.upsertUser.run.bind(stmts.upsertUser));
+
+// Wrapper subscribeUser qui injecte les dépendances (manualEmotion, getUserConfig, upsertUser)
+function _subscribeUser(receiver, userId, displayName) {
+    return subscribeUser(receiver, userId, displayName, {
+        manualEmotion,
+        getUserConfig: (token) => stmts.getUserConfig.get(token),
+        upsertUser:    (token, dn, cfg) => stmts.upsertUser.run(token, dn, cfg),
+    });
 }
 
-// ════════════════════════════════════════════════════════════════
-// AUDIO SUBSCRIPTION
-// ════════════════════════════════════════════════════════════════
-// Historique fréquences par user pour calcul de deltas
-const userFreqHistory = new Map();
-// Baseline vocale par user (EMA) — calibration continue
-const userBaseline = new Map();
-// Sessions d'enregistrement d'empreintes vocales actives
-// token → { startedAt, durationMs, samples: [{ db, freq:{low,mid,high}, zcr, centroid, energyVar }] }
-const recordingSessions = new Map();
-// userId → { dbMean, dbStd, freqMean:{low,mid,high}, freqStd:{low,mid,high}, sampleCount, lastUpdate, dirty }
-const BASELINE_ALPHA = 0.005; // lissage lent (~10s convergence à 20Hz)
+// Shim conservé pour compatibilité avec les usages internes de computeFreqBands
+// (smoothAndClassifyState, handleLevels) — la fonction est importée depuis src/bot/audio.js.
 
-// Sauvegarde périodique de la baseline dans config_json (toutes les 60s)
-setInterval(() => {
-    for (const [userId, bl] of userBaseline) {
-        if (!bl.dirty) continue;
-        bl.dirty = false;
-        const token = tokenFor(userId);
-        try {
-            const row = stmts.getUserConfig.get(token);
-            const cfg = row ? JSON.parse(row.config_json || '{}') : {};
-            cfg.calibration = {
-                dbMean: Math.round(bl.dbMean * 100) / 100,
-                dbStd: Math.round(bl.dbStd * 100) / 100,
-                freqMean: {
-                    low: Math.round(bl.freqMean.low * 1000) / 1000,
-                    mid: Math.round(bl.freqMean.mid * 1000) / 1000,
-                    high: Math.round(bl.freqMean.high * 1000) / 1000,
-                },
-                freqStd: {
-                    low: Math.round(bl.freqStd.low * 1000) / 1000,
-                    mid: Math.round(bl.freqStd.mid * 1000) / 1000,
-                    high: Math.round(bl.freqStd.high * 1000) / 1000,
-                },
-                sampleCount: bl.sampleCount,
-            };
-            stmts.upsertUser.run(token, cfg.displayName || '???', JSON.stringify(cfg));
-        } catch {}
-    }
-}, 60000);
-
-// Charger la baseline depuis config_json au démarrage audio d'un user
-function loadBaselineFromConfig(userId) {
-    const token = tokenFor(userId);
-    try {
-        const row = stmts.getUserConfig.get(token);
-        if (!row) return;
-        const cfg = JSON.parse(row.config_json || '{}');
-        if (!cfg.calibration || !cfg.calibration.dbMean) return;
-        const cal = cfg.calibration;
-        userBaseline.set(userId, {
-            dbMean: cal.dbMean,
-            dbStd: cal.dbStd || 0,
-            freqMean: cal.freqMean || { low: 0, mid: 0, high: 0 },
-            freqStd: cal.freqStd || { low: 0, mid: 0, high: 0 },
-            sampleCount: cal.sampleCount || 0,
-            lastUpdate: Date.now(),
-            dirty: false,
-        });
-    } catch {}
-}
-
-function subscribeUser(receiver, userId, displayName) {
-    // Charger baseline persistée si pas déjà en mémoire
-    if (!userBaseline.has(userId)) loadBaselineFromConfig(userId);
-    try {
-        // Le flux opus est décodé en PCM 16-bit stéréo (48kHz).
-        const opusStream = receiver.subscribe(userId, {
-            end: { behavior: EndBehaviorType.AfterSilence, duration: 100 },
-        });
-        const decoder = new prism.opus.Decoder({
-            frameSize: 960,
-            channels: 2,
-            rate: AUDIO.sampleRate,
-        });
-        opusStream.pipe(decoder);
-        let sumSq = 0,
-            sampleCount = 0;
-        const history = [];
-        // Buffer circulaire pour les échantillons FFT (évite O(n) de Array.shift)
-        const FREQ_BUF_CAP = AUDIO.fftSize * 2;
-        const freqBuf = new Float32Array(FREQ_BUF_CAP);
-        let freqBufLen = 0, freqBufStart = 0;
-        if (!userFreqHistory.has(userId)) userFreqHistory.set(userId, []);
-        const tick = setInterval(() => {
-            if (!sampleCount) return;
-            // RMS -> dB: mesure de niveau perçu. -100 dB sert de plancher "silence".
-            const rms = Math.sqrt(sumSq / sampleCount) / 32768,
-                db = rms > 0 ? 20 * Math.log10(rms) : -100,
-                now = Date.now();
-            // Fenêtre glissante pour lisser les micro-variations instantanées.
-            history.push({ db, t: now });
-            while (history.length && now - history[0].t > AUDIO.durationWindow)
-                history.shift();
-            const avgDb =
-                history.reduce((a, v) => a + v.db, 0) / history.length;
-            // Extraire les échantillons ordonnés du buffer circulaire pour FFT + ZCR
-            const orderedBuf = new Float32Array(freqBufLen);
-            for (let i = 0; i < freqBufLen; i++) {
-                orderedBuf[i] = freqBuf[(freqBufStart + i) % FREQ_BUF_CAP];
-            }
-            const freqResult = computeFreqBands(orderedBuf);
-            const freq = { low: freqResult.low, mid: freqResult.mid, high: freqResult.high };
-            const centroid = freqResult.centroid;
-            // ZCR (Zero Crossing Rate) — rugosité/agressivité de la voix
-            let zc = 0;
-            for (let i = 1; i < freqBufLen; i++) {
-                if ((orderedBuf[i] >= 0) !== (orderedBuf[i - 1] >= 0)) zc++;
-            }
-            const zcr = freqBufLen > 1 ? Math.round(zc / (freqBufLen - 1) * 1000) / 1000 : 0;
-            // Energy Variance — stabilité du volume (rire = instable, calme = stable)
-            const dbVals = history.map(h => h.db);
-            const dbMeanLocal = dbVals.reduce((a, v) => a + v, 0) / dbVals.length;
-            const energyVar = dbVals.length > 1
-                ? Math.round(dbVals.reduce((a, v) => a + (v - dbMeanLocal) ** 2, 0) / dbVals.length * 100) / 100
-                : 0;
-            // Calcul deltas fréquentiels (taux de changement)
-            const fh = userFreqHistory.get(userId);
-            fh.push({ ...freq, t: now });
-            while (fh.length > 10) fh.shift();
-            const freqDelta = { low: 0, mid: 0, high: 0 };
-            if (fh.length >= 3) {
-                const recent = fh.slice(-2);
-                const older = fh.slice(0, Math.min(3, fh.length - 2));
-                for (const band of ['low', 'mid', 'high']) {
-                    const avgRecent = recent.reduce((s, b) => s + b[band], 0) / recent.length;
-                    const avgOlder = older.reduce((s, b) => s + b[band], 0) / older.length;
-                    freqDelta[band] = Math.round((avgRecent - avgOlder) * 1000) / 1000;
-                }
-            }
-            // Mise à jour baseline vocale (EMA) — seulement quand on parle
-            {
-                const a = BASELINE_ALPHA;
-                let bl = userBaseline.get(userId);
-                if (!bl) {
-                    bl = {
-                        dbMean: avgDb, dbStd: 0,
-                        freqMean: { ...freq }, freqStd: { low: 0, mid: 0, high: 0 },
-                        sampleCount: 0, lastUpdate: now, dirty: false,
-                    };
-                    userBaseline.set(userId, bl);
-                }
-                bl.sampleCount++;
-                const prevDbMean = bl.dbMean;
-                bl.dbMean += a * (avgDb - bl.dbMean);
-                bl.dbStd = Math.sqrt((1 - a) * (bl.dbStd ** 2 + a * (avgDb - prevDbMean) ** 2));
-                for (const band of ['low', 'mid', 'high']) {
-                    const prev = bl.freqMean[band];
-                    bl.freqMean[band] += a * (freq[band] - prev);
-                    bl.freqStd[band] = Math.sqrt((1 - a) * (bl.freqStd[band] ** 2 + a * (freq[band] - prev) ** 2));
-                }
-                bl.lastUpdate = now;
-                bl.dirty = true;
-            }
-
-            // Détection émotion : manuelle (prioritaire) ou automatique (empreintes)
-            const fpToken = uidToToken.get(userId) || tokenFor(userId);
-            const manual = manualEmotion.get(fpToken);
-            let detectedEmotion;
-            if (manual) {
-                if (Date.now() - manual.setAt > MANUAL_EMOTION_TIMEOUT_MS) {
-                    manualEmotion.delete(fpToken);
-                    detectedEmotion = detectEmotionFromFingerprints(fpToken, {
-                        db: Math.round(avgDb * 100) / 100, freq, zcr, centroid, energyVar,
-                    });
-                } else {
-                    detectedEmotion = manual.emotion;
-                }
-            } else {
-                detectedEmotion = detectEmotionFromFingerprints(fpToken, {
-                    db: Math.round(avgDb * 100) / 100, freq, zcr, centroid, energyVar,
-                });
-            }
-
-            userLevels.set(userId, {
-                db: Math.round(avgDb * 100) / 100,
-                rms: Math.round(rms * 10000) / 10000,
-                freq,
-                freqDelta,
-                zcr,
-                centroid,
-                energyVar,
-                detectedEmotion,
-                speaking: true,
-                displayName,
-                updated: now,
-            });
-            // Accumulation empreinte vocale si enregistrement actif
-            const recToken = uidToToken.get(userId);
-            const recSession = recToken ? recordingSessions.get(recToken) : null;
-            if (recSession && now - recSession.startedAt < recSession.durationMs) {
-                recSession.samples.push({
-                    db: Math.round(avgDb * 100) / 100,
-                    freq: { ...freq }, zcr, centroid, energyVar,
-                });
-            }
-            sumSq = 0;
-            sampleCount = 0;
-        }, AUDIO.sampleInterval);
-        decoder.on("data", (chunk) => {
-            for (let i = 0; i < chunk.length; i += 2) {
-                const s = chunk.readInt16LE(i);
-                sumSq += s * s;
-                sampleCount++;
-                // Buffer circulaire O(1) au lieu de Array.shift() O(n)
-                const writeIdx = (freqBufStart + freqBufLen) % FREQ_BUF_CAP;
-                freqBuf[writeIdx] = s / 32768;
-                if (freqBufLen < FREQ_BUF_CAP) freqBufLen++;
-                else freqBufStart = (freqBufStart + 1) % FREQ_BUF_CAP;
-            }
-        });
-        // Cleanup unique: centralise la fermeture des streams + reset état utilisateur.
-        const cleanup = () => {
-            clearInterval(tick);
-            try {
-                opusStream.destroy();
-            } catch (_) {}
-            try {
-                decoder.destroy();
-            } catch (_) {}
-            const prev = userLevels.get(userId) || {};
-            userLevels.set(userId, {
-                ...prev,
-                db: -100,
-                rms: 0,
-                freq: { low: 0, mid: 0, high: 0 },
-                freqDelta: { low: 0, mid: 0, high: 0 },
-                speaking: false,
-                updated: Date.now(),
-            });
-            // Nettoyage différé des Maps mémoire (5 min après déconnexion)
-            setTimeout(() => {
-                // Ne nettoyer que si l'user n'est pas revenu (pas de données récentes)
-                const cur = userLevels.get(userId);
-                if (cur && !cur.speaking && Date.now() - cur.updated > 290_000) {
-                    userFreqHistory.delete(userId);
-                    const tk = uidToToken.get(userId) || tokenFor(userId);
-                    emotionState.delete(tk);
-                    stateSmooth.delete(tk);
-                    manualEmotion.delete(tk);
-                }
-            }, 300_000);
-        };
-        opusStream.on("end", cleanup);
-        opusStream.on("close", cleanup);
-        decoder.on("end", cleanup);
-        opusStream.on("error", (err) => {
-            if (err?.code === "GenericFailure") return;
-            console.error(`opusStream error [${userId}]:`, err.message || err);
-        });
-        decoder.on("error", (err) => {
-            if (err?.message?.includes("corrupted")) return; // premiers paquets opus — normal
-            console.error(`decoder error:`, err);
-        });
-    } catch (err) {
-        console.error(`Audio error:`, err);
-    }
-}
+// computeFreqBands importé depuis src/bot/audio.js
 
 // ════════════════════════════════════════════════════════════════
 // DISCORD CLIENT
@@ -3812,6 +1838,10 @@ async function connectToVoiceChannel(guildId, channelId) {
     // Debug: log chaque transition d'état de la connexion vocale
     connection.on("stateChange", (oldState, newState) => {
         console.log(`🔗 Voice: ${oldState.status} → ${newState.status}`);
+    });
+    // Absorber les erreurs réseau Discord (ex: IP discovery / UDP socket) — évite un crash fatal
+    connection.on("error", (err) => {
+        console.error("⚠ Voice connection error (non-fatal):", err.message);
     });
 
     // Attendre que la connexion vocale soit prête (UDP + encryption)
@@ -3851,7 +1881,7 @@ async function connectToVoiceChannel(guildId, channelId) {
         const existing = readCfg(userId) || {};
         if (existing.displayName !== displayName)
             writeCfg(userId, { ...existing, displayName });
-        subscribeUser(receiver, userId, displayName);
+        _subscribeUser(receiver, userId, displayName);
     });
     receiver.speaking.on("end", (userId) => {
         activeSubscriptions.delete(userId);
@@ -3870,231 +1900,36 @@ async function connectToVoiceChannel(guildId, channelId) {
     return { guild, channel, members };
 }
 
-const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildVoiceStates,
-    ],
-});
-// ── Slash Commands ─────────────────────────────────────────────
-const slashCommands = [
-    new SlashCommandBuilder()
-        .setName('join')
-        .setDescription('Rejoindre ton salon vocal pour animer ton PNGTuber'),
-    new SlashCommandBuilder()
-        .setName('config')
-        .setDescription('Ouvrir le panneau de configuration web'),
-    new SlashCommandBuilder()
-        .setName('disconnect')
-        .setDescription('Déconnecter le bot du salon vocal'),
-].map(c => c.toJSON());
+// client, slashCommands, handlers d'événements Discord → src/bot/discord.js
 
-client.once("clientReady", async () => {
-    botConnected = true;
-    tokenRejected = false;
-    console.log(`✓ Bot ready — ${client.user.tag}`);
-    console.log("── Voice dependency report ──");
-    console.log(generateDependencyReport());
-
-    // Enregistrer les slash commands par serveur (instantané, pas de délai de propagation)
-    try {
-        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-        // Nettoyer les commandes globales éventuelles
-        await rest.put(Routes.applicationCommands(client.user.id), { body: [] }).catch(() => {});
-        // Enregistrer sur chaque serveur du bot
-        for (const [guildId, guild] of client.guilds.cache) {
-            try {
-                await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), { body: slashCommands });
-                console.log(`✓ Slash commands → ${guild.name}`);
-            } catch (err) {
-                console.warn(`⚠ Slash commands ${guild.name}: ${err.message}`);
-            }
-        }
-    } catch (err) {
-        console.warn("⚠ Échec enregistrement slash commands:", err.message);
-    }
-
-    // Auto-reconnect au dernier channel vocal si l'option est activée
-    const voiceState = loadVoiceState();
-    if (voiceState.autoReconnect && voiceState.guildId && voiceState.channelId) {
-        console.log(`🔄 Auto-reconnect → guild:${voiceState.guildId} channel:${voiceState.channelId}`);
-        try {
-            await connectToVoiceChannel(voiceState.guildId, voiceState.channelId);
-            console.log("✓ Auto-reconnect réussi");
-        } catch (err) {
-            console.warn("⚠ Auto-reconnect échoué:", err.message);
-        }
-    }
-});
-client.on("error", (err) => {
-    if (err?.message?.includes("TOKEN_INVALID") || err?.code === 4004) {
-        tokenRejected = true;
-        console.error("❌ Token Discord invalide");
-    }
-});
-
-client.on("messageCreate", async (message) => {
-    if (message.author.bot) return;
-
-    const cmd = message.content.trim().toLowerCase();
-    if (cmd === "!join") {
-        const channel = message.member?.voice.channel;
-        if (!channel)
-            return message.reply("❌ Tu dois être dans un canal vocal.");
-        try {
-            const result = await connectToVoiceChannel(channel.guild.id, channel.id);
-            const baseUrl = getPublicUrl();
-            const guildId = channel.guild.id;
-            const links = [...result.members.values()]
-                .filter(m => isAvatarAllowed(tokenFor(m.id), guildId))
-                .map((m) => {
-                    const t = tokenFor(m.id);
-                    return `  • **${m.displayName || m.user?.username || "???"}** → \`${baseUrl}/viewer.html?t=${t}&guild=${guildId}\``;
-                })
-                .join("\n");
-            return message.reply(
-                `✅ Connecté à **${result.channel.name}** !\n\n` +
-                    `⚙️ Config : \`${baseUrl}\`\n\n` +
-                    `🎬 Viewers :\n${links || "  (aucun membre autorisé)"}`,
-            );
-        } catch (err) {
-            console.error("Join error:", err);
-            return message.reply("❌ Impossible de rejoindre le canal.");
-        }
-    }
-
-    if (cmd === "!disconnect") {
-        if (!currentConnection) return message.reply("❌ Pas connecté.");
-        disconnectVoice();
-        return message.reply("👋 Déconnecté du canal vocal.");
-    }
-
-    if (cmd === "!status") {
-        const lines =
-            [...userLevels.entries()]
-                .map(
-                    ([, v]) =>
-                        `  • **${v.displayName || "???"}** — ${v.db} dB ${v.speaking ? "🎙" : "🔇"}`,
-                )
-                .join("\n") || "  (aucun)";
-        return message.reply(
-            `**Bot** Discord:${botConnected ? "✅" : "❌"} Voice:${connectedGuildId ? "✅" : "❌"}\n${lines}`,
-        );
-    }
-});
-
-// ── Slash command handler ──────────────────────────────────────
-client.on("interactionCreate", async (interaction) => {
-    if (!interaction.isChatInputCommand()) return;
-    const { commandName } = interaction;
-
-    if (commandName === 'join') {
-        const channel = interaction.member?.voice?.channel;
-        if (!channel) {
-            return interaction.reply({ content: "❌ Tu dois être dans un salon vocal.", ephemeral: true });
-        }
-        await interaction.deferReply({ ephemeral: true });
-        try {
-            const result = await connectToVoiceChannel(channel.guild.id, channel.id);
-            const baseUrl = getPublicUrl();
-            const guildId = channel.guild.id;
-            const authorized = [];
-            const denied = [];
-            for (const [, m] of result.members) {
-                const t = tokenFor(m.id);
-                const name = m.displayName || m.user?.username || "???";
-                if (isAvatarAllowed(t, guildId)) {
-                    authorized.push(`✅ **${name}**\n\`\`\`\n${baseUrl}/viewer.html?t=${t}&guild=${guildId}\n\`\`\``);
-                } else {
-                    denied.push(`🔒 **${name}** — non autorisé sur ce serveur`);
-                }
-            }
-            const parts = [`✅ Connecté à **${result.channel.name}** !`, `⚙️ Config : \`${baseUrl}\``];
-            if (authorized.length) parts.push(`\n🎬 **Viewers autorisés :**\n${authorized.join("\n")}`);
-            if (denied.length) parts.push(`\n${denied.join("\n")}`);
-            if (!authorized.length && !denied.length) parts.push("\n(aucun membre)");
-            return interaction.editReply(parts.join("\n"));
-        } catch (err) {
-            return interaction.editReply("❌ Impossible de rejoindre le salon.");
-        }
-    }
-
-    if (commandName === 'config') {
-        const baseUrl = getPublicUrl();
-        return interaction.reply({
-            content: `🔧 **Panneau de configuration PNGTuber**\n\n` +
-                `Clique sur le lien ci-dessous pour configurer ton avatar, tes frames et tes seuils audio :\n` +
-                `👉 ${baseUrl}`,
-            ephemeral: true
-        });
-    }
-
-    if (commandName === 'disconnect') {
-        if (!currentConnection) {
-            return interaction.reply({ content: "❌ Le bot n'est pas connecté à un salon vocal.", ephemeral: true });
-        }
-        disconnectVoice();
-        return interaction.reply({ content: "👋 Déconnecté du salon vocal.", ephemeral: true });
-    }
-});
-
-function getPublicUrl() {
-    return BASE_URL;
+// ── Initialisation du bot Discord — handlers via src/bot/discord.js ──────────
+// getState : fournit l'état courant (closures sur les variables locales de index.js)
+function getState() {
+    return { followTarget, currentConnection, botConnected, connectedGuildId };
 }
 
-client.on("voiceStateUpdate", (oldState, newState) => {
-    // ── Mode suivi : si la cible change de canal, suivre ──
-    if (followTarget && newState.id === followTarget.discordId) {
-        if (newState.channelId && newState.channelId !== oldState.channelId) {
-            const newChannel = newState.guild.channels.cache.get(newState.channelId);
-            if (newChannel) {
-                const botMember = newState.guild.members.me;
-                const canConnect = botMember && newChannel.permissionsFor(botMember).has(PermissionFlagsBits.Connect);
-                if (canConnect) {
-                    connectToVoiceChannel(newState.guild.id, newState.channelId)
-                        .then(() => console.log(`👣 Suivi: ${newState.member?.displayName} → ${newChannel.name}`))
-                        .catch(() => broadcastFollowError(newChannel.name, followTarget.displayName));
-                } else {
-                    broadcastFollowError(newChannel.name, followTarget.displayName);
-                }
-            }
-        }
-        // Si la cible quitte le vocal complètement
-        if (!newState.channelId) {
-            console.log(`👣 Cible quitte le vocal, suivi désactivé`);
-            followTarget = null;
-            broadcastFollowStatus();
-        }
-    }
-
-    // ── Déconnexion auto si le bot est seul ──
-    const guild = oldState.guild;
-    if (!guild) return;
-    const connection = getVoiceConnection(guild.id);
-    if (!connection) return;
-    const channel = guild.channels.cache.get(connection.joinConfig.channelId);
-    if (!channel) return;
-    if (channel.members.filter((m) => !m.user.bot).size > 0) return;
-    setTimeout(() => {
-        const ch = guild.channels.cache.get(connection.joinConfig.channelId);
-        if (ch?.members.filter((m) => !m.user.bot).size === 0) {
-            console.log("🔇 Seul → déconnexion auto");
-            disconnectVoice();
-        }
-    }, 5000);
+initBot({
+    connectToVoiceChannel,
+    disconnectVoice,
+    isAvatarAllowed,
+    getState,
+    broadcastFollowStatus,
+    broadcastFollowError,
+    setFollowTarget,
+    BASE_URL,
+    onBotReady: () => {
+        botConnected = true;
+        tokenRejected = false;
+        console.log("── Voice dependency report ──");
+        console.log(generateDependencyReport());
+    },
+    onTokenRejected: () => { tokenRejected = true; },
 });
 
 if (!process.env.DISCORD_TOKEN) {
-    console.warn(
-        `⚠ DISCORD_TOKEN absent — configure-le via ${BASE_URL}/index.html`,
-    );
+    console.warn(`⚠ DISCORD_TOKEN absent — configure-le via ${BASE_URL}/index.html`);
 } else {
-    client.login(process.env.DISCORD_TOKEN).catch((err) => {
-        tokenRejected = true;
-        console.error("❌ Login échoué:", err.message);
-    });
+    loginBot(process.env.DISCORD_TOKEN, () => { tokenRejected = true; });
 }
 console.log("✓ Bot initialized");
 

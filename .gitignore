@@ -3,6 +3,15 @@
 node_modules/
 images/
 meta/
+
+# Donnees runtime (SQLite + voice state)
+data/
+pngtuber.db
+pngtuber.db-shm
+pngtuber.db-wal
+
+# Build outputs
+dist/
 data/
 
 # Claude conversation history
