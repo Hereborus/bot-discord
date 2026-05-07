@@ -1570,12 +1570,17 @@ httpServer = http.createServer(async (req, res) => {
         const fpAsset = path.resolve(path.join(DIST_ROOT, pathname));
         if (fpAsset.startsWith(path.resolve(DIST_ROOT)) && serveFile(res, fpAsset, req)) return;
     }
-    // 2. Fichiers physiques depuis SOURCE_ROOT (styles.css, viewer.html, images/, etc.)
-    //    Servis en priorité : le SPA fallback ne doit pas intercepter les vrais fichiers.
+    // 2. Page racine "/" → dist/index.html (React) en priorité absolue.
+    //    Empêche tout legacy index.html à la racine du repo de prendre le pas sur le build React.
+    if (REACT_BUILT && pathname === "/index.html") {
+        const fpSpa = path.join(DIST_ROOT, 'index.html');
+        if (serveFile(res, fpSpa, req)) return;
+    }
+    // 3. Fichiers physiques depuis SOURCE_ROOT (styles.css, viewer.html, viewer.js, images/, etc.)
     const fpReal = path.resolve(path.join(STATIC_ROOT, pathname));
     if (!fpReal.startsWith(path.resolve(STATIC_ROOT))) { res.writeHead(403); res.end(); return; }
     if (serveFile(res, fpReal, req)) return;
-    // 3. SPA fallback React : toute route inconnue → dist/index.html (React Router côté client)
+    // 4. SPA fallback React : route inconnue → dist/index.html (routing client-side)
     if (REACT_BUILT) {
         const fpSpa = path.join(DIST_ROOT, 'index.html');
         if (serveFile(res, fpSpa, req)) return;

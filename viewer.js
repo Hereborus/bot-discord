@@ -649,12 +649,12 @@
         }
         // ── FIN DEBUG ──
 
-        if (effectiveKey !== userStates[uid].displayKey) {
+        if (displayKey !== userStates[uid].displayKey) {
             if (frames.length > 0) {
-                userStates[uid].displayKey = effectiveKey;
+                userStates[uid].displayKey = displayKey;
                 const bt = blinkTimers[uid];
-                if (!bt?.blinking) startFlipbook(uid, frames, effectiveKey);
-                updateBlinkForState(uid, effectiveKey);
+                if (!bt?.blinking) startFlipbook(uid, frames, displayKey);
+                updateBlinkForState(uid, displayKey);
             }
         }
     }
