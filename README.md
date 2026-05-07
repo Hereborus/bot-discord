@@ -7,6 +7,7 @@ Bot Discord qui anime des avatars PNG en fonction de l'activité vocale. Il rejo
 ## Fonctionnalités
 
 - **Analyse vocale temps réel** — RMS/dB, bandes de fréquences FFT (grave/médium/aigu), ZCR, centroïde spectral, variance d'énergie
+- **Détection de formants vocaux** — Extraction F1/F2/F3 par LPC Levinson-Durbin (ord. 12) — enrichit la détection d'émotions (arousal F1, valence F2, tension F3)
 - **Avatars multi-états** — silent, low, medium, high + émotions personnalisées (colère, cri, etc.)
 - **Système d'empreintes vocales** — Enregistrement de snapshots acoustiques pour détection automatique d'émotions avec hystérésis côté serveur
 - **Viewer OBS** — Source navigateur avec animation flipbook, clignement automatique, positionnement par frame
@@ -76,11 +77,11 @@ Toute la configuration se fait via des variables d'environnement. Voir [`.env.ex
 
 ### Backend — `index.js` + modules `src/`
 
-`index.js` (~3650 lignes) orchestre l'ensemble et importe les modules de `src/` :
+`index.js` (~1905 lignes) orchestre l'ensemble et importe les modules de `src/` :
 
 - **Serveur HTTP** (natif, sans Express) avec mini-routeur + pattern middleware (`src/http/`)
 - **Bot Discord** (discord.js v14 + @discordjs/voice) avec commandes texte (`!join`, `!disconnect`, `!status`) et commandes slash
-- **Pipeline audio** : Opus → PCM (prism-media) → RMS/dB → FFT 1024 points → 3 bandes de fréquences → ZCR + centroïde spectral + variance d'énergie → matching d'empreintes vocales avec hystérésis
+- **Pipeline audio** : Opus → PCM (prism-media) → RMS/dB → FFT 1024 points → 3 bandes de fréquences → ZCR + centroïde spectral + variance d'énergie → LPC Levinson-Durbin → formants F1/F2/F3 → matching d'empreintes vocales avec hystérésis
 - **Serveur WebSocket** pour le streaming des niveaux audio en temps réel (20fps)
 - **Base de données SQLite** (better-sqlite3) — schéma + repositories dans `src/db/`
 - **OAuth2 + auth par rôles** avec cookies de session sécurisés + Device Auth Flow (Bearer tokens) — `src/services/authService.js`
@@ -91,21 +92,22 @@ Toute la configuration se fait via des variables d'environnement. Voir [`.env.ex
 
 | Répertoire | Contenu |
 |------------|---------|
+| `src/bot/` | audio.js (pipeline complet Opus→PCM→FFT→LPC→formants), discord.js (client + events) |
 | `src/services/` | rateLimiter, tokenService, tierService, authService, audioService, voiceService |
 | `src/db/` | database.js (SQLite init + schéma), repos/ (users, permissions, subscriptions, sessions, appTokens) |
 | `src/http/` | cors.js, helpers.js, router.js, middleware.js |
-| `src/routes/` | levels.js, frames.js, notifications.js, subscriptions.js, sessions.js, admin.js |
+| `src/routes/` | levels, frames, notifications, subscriptions, sessions, admin, auth, config, device, emotion, permissions, upload, voice |
 
 ### Frontend — React (Vite) + pages HTML standalone
 
-**Panneau de contrôle** : application React 18 dans `client/`, buildée en `dist/`. Le backend sert `dist/index.html` pour `/`. Le legacy `index.html` a été supprimé lors de la migration.
+**Panneau de contrôle** : application React 18 dans `client/`, buildée en `dist/`. Le backend sert `dist/index.html` pour `/`.
 
 | Page | Description |
 |------|-------------|
-| `viewer.html` | Source navigateur OBS — rendu des avatars PNGTuber animés |
-| `positioner.html` | Éditeur de position/échelle des frames sur canvas |
+| `viewer.html` | Source navigateur OBS — rendu des avatars PNGTuber animés (standalone, non migré) |
+| `/positioner` | Éditeur de position/échelle des frames — route React (`PositionerApp.jsx`) |
 
-`viewer.html` et `positioner.html` restent des fichiers HTML standalone (non migrés — usage OBS exclusivement).
+`viewer.html` reste un fichier HTML standalone (usage OBS exclusivement). `positioner.html` a été supprimé et remplacé par la route React `/positioner`.
 
 ### Flux de données
 
@@ -119,7 +121,12 @@ Salon vocal Discord
    RMS → dB → Lissage + Classification → État (silent/low/med/high)
         │
         ▼
-   FFT → Bandes fréq. → Matching empreintes → Émotion (hystérésis)
+   FFT → Bandes fréq. ──────────────────────────┐
+        │                                        │
+        ▼                                        ▼
+   LPC (Levinson-Durbin) → Formants F1/F2/F3    │
+        │                                        │
+        └──────────────────────────────────────▶ Matching empreintes → Émotion (hystérésis)
         │
         ▼
    ┌─────────────────────────────────┐
@@ -182,10 +189,7 @@ Les deux clients reçoivent les **mêmes données** (state + émotion) calculée
 | POST | `/reorder` | Réordonner les frames |
 | POST | `/delete-frame` | Supprimer une frame |
 | POST | `/user-config/:token` | Sauvegarder la config audio |
-| POST | `/calibration/:token/record-start` | Démarrer l'enregistrement d'empreinte (premium) |
-| POST | `/calibration/:token/record-stop` | Arrêter + récupérer l'empreinte (premium) |
-| POST | `/calibration/:token/save-fingerprint` | Sauvegarder l'empreinte (premium) |
-| DELETE | `/calibration/:token/fingerprint/:key` | Supprimer une empreinte (premium) |
+| POST | `/api/viewer-session` | Créer une session viewer temporaire |
 
 ### Authentifié (tout utilisateur connecté)
 
@@ -354,15 +358,16 @@ docker compose logs -f       # Suivre les logs
 ```
 ├── index.js            # Backend : bot + HTTP + audio + auth + DB (orchestre src/)
 ├── src/
+│   ├── bot/            # audio.js (pipeline FFT+LPC), discord.js (client + events)
 │   ├── services/       # rateLimiter, tokenService, tierService, authService, audioService, voiceService
 │   ├── db/             # database.js + repos/ (users, permissions, subscriptions, sessions, appTokens)
 │   ├── http/           # cors.js, helpers.js, router.js, middleware.js
-│   └── routes/         # levels.js, frames.js, notifications.js, subscriptions.js, sessions.js, admin.js
+│   └── routes/         # levels, frames, notifications, subscriptions, sessions, admin,
+│                       # auth, config, device, emotion, permissions, upload, voice
 ├── client/             # Application React 18 + Vite (panneau de contrôle)
 │   └── src/            # Composants, hooks, contexte, api.js
 ├── dist/               # Build React généré (servi par le backend en production)
 ├── viewer.html         # Source navigateur OBS (standalone, non migré)
-├── positioner.html     # Éditeur de position/échelle des frames (standalone)
 ├── package.json        # Dépendances backend
 ├── Dockerfile          # Build multi-étages : frontend-build → backend-build → runtime
 ├── docker-compose.yml  # Configuration conteneur
