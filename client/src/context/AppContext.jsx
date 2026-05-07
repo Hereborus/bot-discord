@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback, useMemo } from 'react';
 
 const AppContext = createContext(null);
 
@@ -49,24 +49,32 @@ export function AppProvider({ children }) {
     }));
   }, []);
 
-  return (
-    <AppContext.Provider value={{
-      authRole, setAuthRole,
-      effectiveRole, setEffectiveRole,
-      myToken, setMyToken,
-      tier, setTier,
-      tierLimits, setTierLimits,
-      authUser, setAuthUser,
-      apiHost, setApiHost,
-      audioConfig, setAudioConfig,
-      configData, setConfigData, updateConfigData,
-      levels, setLevels,
-      botStatus, setBotStatus,
-      apiConnected, setApiConnected,
-    }}>
-      {children}
-    </AppContext.Provider>
-  );
+  // Memoize l'objet value pour eviter de re-creer une reference a chaque render
+  // du Provider. Sans cette memo, les ~10 setLevels par seconde (polling /levels)
+  // recreent l'objet et tous les consommateurs de useApp() re-render — meme
+  // ceux qui ne lisent pas levels (ex: Header, TabBar, Modal de config).
+  // useMemo + dependances explicites = re-render uniquement quand UNE des
+  // valeurs lues change reellement.
+  const value = useMemo(() => ({
+    authRole, setAuthRole,
+    effectiveRole, setEffectiveRole,
+    myToken, setMyToken,
+    tier, setTier,
+    tierLimits, setTierLimits,
+    authUser, setAuthUser,
+    apiHost, setApiHost,
+    audioConfig, setAudioConfig,
+    configData, setConfigData, updateConfigData,
+    levels, setLevels,
+    botStatus, setBotStatus,
+    apiConnected, setApiConnected,
+  }), [
+    authRole, effectiveRole, myToken, tier, tierLimits, authUser,
+    apiHost, audioConfig, configData, levels, botStatus, apiConnected,
+    updateConfigData,
+  ]);
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
 export function useApp() {
