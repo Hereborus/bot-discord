@@ -117,6 +117,7 @@ import {
     computeFreqBands, subscribeUser,
     loadBaselineFromConfig, startBaselinePersistence,
     invalidateFingerprintCache as invalidateAudioFpCache,
+    getVoiceStats,
 } from './src/bot/audio.js';
 import { registerCalibrationRoutes } from './src/bot/calibration.js';
 
@@ -681,6 +682,7 @@ async function handleLevels(req, res, ctx) {
             freqDelta: d.freqDelta || { low: 0, mid: 0, high: 0 },
             zcr: d.zcr || 0, centroid: d.centroid || 0, energyVar: d.energyVar || 0,
             formants: d.formants || { f1: 0, f2: 0, f3: 0 },
+            voiceProfileN: (getVoiceStats(uid)?.n || 0),
             detectedEmotion: manualEmotion.get(tk)?.emotion || d.detectedEmotion || null,
             state: smoothAndClassifyState(tk, d.db),
             speaking: d.speaking, displayName: d.displayName, updated: d.updated,
@@ -1416,9 +1418,9 @@ route('GET', '/api/debug-log', requireAuth, requireAdmin, async (req, res, ctx) 
 route('GET', '/api/emotion/:token', handleGetEmotion);
 route('POST', '/api/emotion/:token', requireAuth, requireClientOrAdmin, _handleSetEmotion);
 
-// Routes calibration vocale (enregistrement d'empreintes + affinage formants)
+// Routes calibration vocale (save/delete fingerprint — profil vocal est passif/automatique)
 registerCalibrationRoutes({
-    route, requireAuth, requireClientOrAdmin, loadTier, requirePremium,
+    route, requireAuth, requireClientOrAdmin,
     stmts, isKnownToken, invalidateAudioFpCache,
 });
 
@@ -1702,6 +1704,7 @@ setInterval(() => {
             freqDelta: d.freqDelta || { low: 0, mid: 0, high: 0 },
             zcr: d.zcr || 0, centroid: d.centroid || 0, energyVar: d.energyVar || 0,
             formants: d.formants || { f1: 0, f2: 0, f3: 0 },
+            voiceProfileN: (getVoiceStats(uid)?.n || 0),
             detectedEmotion: manualEmotion.get(tk)?.emotion || d.detectedEmotion || null,
             state: smoothAndClassifyState(tk, d.db),
             speaking: d.speaking, displayName: d.displayName, updated: d.updated,
