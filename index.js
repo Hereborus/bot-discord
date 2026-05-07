@@ -344,7 +344,8 @@ function openDefaultBrowser(url) {
     // Utiliser spawn avec tableau d'arguments (pas de shell injection possible)
     let cmd, args;
     if (process.platform === "win32") {
-        cmd = "cmd"; args = ["/c", "start", "", url];
+        // PowerShell Start-Process : ouvre le navigateur sans fenêtre cmd parasite
+        cmd = "powershell"; args = ["-NoProfile", "-NonInteractive", "-Command", `Start-Process '${url}'`];
     } else if (process.platform === "darwin") {
         cmd = "open"; args = [url];
     } else {
