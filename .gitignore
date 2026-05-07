@@ -12,6 +12,7 @@ pngtuber.db-wal
 
 # Build outputs
 dist/
+data/
 
 # Claude conversation history
 .claude/conversations/
