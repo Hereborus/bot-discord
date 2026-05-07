@@ -119,7 +119,7 @@ import {
     invalidateFingerprintCache as invalidateAudioFpCache,
     getVoiceStats,
 } from './src/bot/audio.js';
-import { registerCalibrationRoutes } from './src/bot/calibration.js';
+import { registerCalibrationRoutes } from './src/routes/calibration.js';
 
 const SOURCE_ROOT = process.cwd();
 const STATIC_ROOT = SOURCE_ROOT;

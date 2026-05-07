@@ -1,23 +1,23 @@
 # `bot/`
 
-> **Bot Discord (client + slash commands + events) + pipeline audio + routes calibration.**
+> **Bot Discord (client + slash commands + events) + pipeline audio temps reel.**
 > Parent : [`src/`](../README.md)
 
 ## Vue d'ensemble
 
-Trois fichiers de tailles très différentes :
+Deux fichiers :
 - `discord.js` (~268 lignes) — couche Discord pure (events, slash commands, mode suivi).
 - `audio.js` (~607 lignes) — pipeline DSP temps réel (Opus → FFT → LPC → fingerprints émotion).
-- `calibration.js` (~78 lignes) — **anomalie** : ce sont des routes HTTP (devrait vivre dans `routes/`).
 
 Le couplage entre `discord.js` et `audio.js` se fait via [`services/audioService.js`](../services/audioService.md) (`userLevels`) et via les callbacks injectés à `initBot()`. **Aucun import direct circulaire.**
+
+> Note : les routes HTTP de calibration (anciennement dans `bot/calibration.js`) ont ete deplacees dans [`routes/calibration.js`](../routes/calibration.md) lors du refactor de mai 2026.
 
 ## Fichiers
 
 | Fichier | Brève | Doc complète |
 |---------|-------|--------------|
 | `audio.js` | Pipeline DSP : RMS/dB, FFT bandes, ZCR, LPC formants, baseline EMA, profil vocal passif, hystérésis émotion. | [audio.md](./audio.md) |
-| `calibration.js` | Routes `/calibration/:token/save-fingerprint` et `/calibration/:token/fingerprint/:emotionKey`. | [calibration.md](./calibration.md) |
 | `discord.js` | Client Discord.js v14, slash commands, mode suivi, déconnexion auto. | [discord.md](./discord.md) |
 
 ## Architecture interne

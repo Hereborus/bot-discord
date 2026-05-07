@@ -8,7 +8,7 @@
 Ce dossier rassemble les handlers extraits d'`index.js` au fil de la migration progressive du monolithe vers une structure modulaire. Chaque fichier expose des fonctions `async (req, res, ctx, deps?) => void` qui sont enregistrées dans le mini-router (`src/http/router.js`) depuis `index.js`.
 
 Deux conventions coexistent :
-1. **Imports directs** (`auth.js`, `device.js`, `admin.js`, `levels.js`, `notifications.js`, `sessions.js`, `subscriptions.js`, `emotion.js`, `frames.js`) — les services/repos sont importés en haut du fichier.
+1. **Imports directs** (`auth.js`, `device.js`, `levels.js`, `notifications.js`, `sessions.js`, `subscriptions.js`, `emotion.js`, `calibration.js`) — les services/repos sont importés en haut du fichier.
 2. **Deps-injection via 4ème argument** (`config.js`, `permissions.js`, `upload.js`, `voice.js`) — les statements et fonctions du contexte global sont passés explicitement par `index.js`.
 
 Cette inconsistance est un legacy de la migration et un candidat à uniformiser (voir audit transversal).
@@ -17,12 +17,11 @@ Cette inconsistance est un legacy de la migration et un candidat à uniformiser 
 
 | Fichier | Brève | Doc complète |
 |---------|-------|--------------|
-| `admin.js` | Permissions admin + DB browser + suppression user | [admin.md](./admin.md) |
 | `auth.js` | OAuth2 Discord (login/callback/logout/me) + test-mode | [auth.md](./auth.md) |
+| `calibration.js` | Empreintes vocales (save/delete fingerprint) | [calibration.md](./calibration.md) |
 | `config.js` | Config audio user + bot token + known users | [config.md](./config.md) |
 | `device.js` | Device Auth Flow RFC 8628 + app tokens CRUD | [device.md](./device.md) |
 | `emotion.js` | Override émotion manuelle (priorité auto-detect) | [emotion.md](./emotion.md) |
-| `frames.js` | Frames CRUD léger (sans tier/magic bytes) | [frames.md](./frames.md) |
 | `levels.js` | `GET /levels` audio temps réel (cache 50ms) | [levels.md](./levels.md) |
 | `notifications.js` | Lecture/marquage notifications in-app | [notifications.md](./notifications.md) |
 | `permissions.js` | Rôles globaux + avatar perms par guilde + endpoints self | [permissions.md](./permissions.md) |
