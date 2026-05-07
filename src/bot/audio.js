@@ -28,18 +28,18 @@ import fftPkg from 'fft-js';
 import { EndBehaviorType } from '@discordjs/voice';
 import {
     userLevels, userFreqHistory, userBaseline,
-    recordingSessions, AUDIO,
+    voiceProfiles, voiceStatsCache,
+    PROFILE_MARKERS, PROFILE_BUF_SIZE, PROFILE_STATS_EVERY,
+    AUDIO,
 } from '../services/audioService.js';
 import { tokenFor } from '../services/tokenService.js';
 
 const { fft, util: fftUtil } = fftPkg;
 
-// Coefficient de lissage de la baseline vocale (~10s de convergence à 20Hz)
+// Coefficient de lissage de la baseline vocale EMA (~10s de convergence à 20Hz)
 const BASELINE_ALPHA = 0.005;
-// Alpha plus lent pour les formants : caractéristiques vocales très stables entre les sessions
-const FORMANT_ALPHA  = 0.002;
-// Nombre minimum d'échantillons formants avant d'activer le filtrage adaptatif
-const FORMANT_BASELINE_MIN_SAMPLES = 100;
+// Nombre minimum de frames dans le profil vocal avant d'activer l'affinage adaptatif des formants
+const PROFILE_MIN_SAMPLES = 150;
 
 // ── Constantes LPC — analyse des formants vocaux ──────────────────────────
 const LPC_ORDER  = 12;  // ordre du prédicteur (standard pour la voix à 48kHz)
@@ -51,6 +51,60 @@ const _lpcR    = new Float64Array(LPC_ORDER + 1); // autocorrélation R[0..p]
 const _lpcA    = new Float64Array(LPC_ORDER + 1); // coefficients LPC a[1..p]
 const _lpcPrev = new Float64Array(LPC_ORDER + 1); // copie itération précédente
 const _lpcEnv  = new Float64Array(LPC_N_EVAL);    // enveloppe spectrale 1/|A(ω)|
+
+// ── Profil vocal passif — buffer circulaire + stats percentiles ──────────────
+// Alimentation passive pendant la parole, aucune action utilisateur requise.
+// Recalcul des stats (tri O(n log n) sur 1000 flottants ≈ 0.1ms) tous les 50 nouveaux samples.
+
+function _pushVoiceProfile(userId, sample) {
+    let p = voiceProfiles.get(userId);
+    if (!p) {
+        const bufs = {};
+        for (const m of PROFILE_MARKERS) bufs[m] = new Float32Array(PROFILE_BUF_SIZE);
+        p = { bufs, head: 0, filled: 0, total: 0, dirty: 0 };
+        voiceProfiles.set(userId, p);
+    }
+    for (const m of PROFILE_MARKERS) {
+        const v = sample[m];
+        if (typeof v === 'number' && isFinite(v) && v > 0) p.bufs[m][p.head] = v;
+    }
+    p.head = (p.head + 1) % PROFILE_BUF_SIZE;
+    if (p.filled < PROFILE_BUF_SIZE) p.filled++;
+    p.total++;
+    p.dirty++;
+    // Recalcul périodique des stats (hors hot-path : toutes les PROFILE_STATS_EVERY frames)
+    if (p.dirty >= PROFILE_STATS_EVERY) {
+        p.dirty = 0;
+        voiceStatsCache.set(userId, _computeVoiceStats(p));
+    }
+}
+
+function _computeVoiceStats(p) {
+    const markers = {};
+    for (const m of PROFILE_MARKERS) {
+        const raw = p.bufs[m].subarray(0, p.filled);
+        // Copie triée sur seulement les valeurs > 0 (exclure silence/non-initialisé)
+        const arr = Array.from(raw).filter(v => v > 0).sort((a, b) => a - b);
+        const n = arr.length;
+        if (n < 5) { markers[m] = null; continue; }
+        markers[m] = {
+            min:  +arr[0].toFixed(3),
+            p10:  +arr[Math.floor(n * 0.10)].toFixed(3),
+            p25:  +arr[Math.floor(n * 0.25)].toFixed(3),
+            p50:  +arr[Math.floor(n * 0.50)].toFixed(3),
+            p75:  +arr[Math.floor(n * 0.75)].toFixed(3),
+            p90:  +arr[Math.floor(n * 0.90)].toFixed(3),
+            max:  +arr[n - 1].toFixed(3),
+            mean: +(arr.reduce((s, v) => s + v, 0) / n).toFixed(3),
+        };
+    }
+    return { n: p.total, markers };
+}
+
+// Exporte les stats calculées pour le profil vocal d'un user (utilisé dans /levels et AudioTab)
+export function getVoiceStats(userId) {
+    return voiceStatsCache.get(userId) || null;
+}
 
 // ── Hystérésis d'émotion ──────────────────────────────────────────────────
 // Évite les changements trop rapides : requiert N confirmations consécutives
@@ -251,33 +305,32 @@ export function computeFormants(buffer, voiceProfile = null) {
         f3: top[2]?.freq || 0,
     };
 
-    // Affinage adaptatif : si le profil vocal de l'user est calibré, filtrer les pics aberrants
-    if (voiceProfile && (voiceProfile.formantSampleCount || 0) >= FORMANT_BASELINE_MIN_SAMPLES) {
+    // Affinage adaptatif : si le profil empirique est suffisamment riche, utiliser p10/p90
+    if (voiceProfile && (voiceProfile.n || 0) >= PROFILE_MIN_SAMPLES) {
         return _refineFormants(raw, peaks, voiceProfile);
     }
     return raw;
 }
 
 /**
- * Valide et affine les formants bruts par rapport au profil vocal calibré de l'user.
- * Pour chaque formant, si la valeur brute est en dehors de ±2.5σ de la baseline,
- * on cherche un pic alternatif dans la plage calibrée.
- * Cela améliore la précision pour les voix qui sortent des plages LPC génériques.
+ * Affine les formants bruts en utilisant la plage empirique p10/p90 du profil vocal.
+ * Remplace l'hypothèse gaussienne mean±σ par des percentiles observés directement
+ * sur la voix de l'user → plus robuste pour les voix atypiques.
  */
-function _refineFormants(raw, peaks, profile) {
-    const { formantMean, formantStd } = profile;
-    const SIGMA = 2.5;
+function _refineFormants(raw, peaks, voiceStats) {
     const result = {};
     for (const fn of ['f1', 'f2', 'f3']) {
         const val   = raw[fn];
-        const mu    = formantMean[fn] || 0;
-        const sigma = Math.max(formantStd[fn] || 0, 20); // plancher 20 Hz
-        const lo    = mu - SIGMA * sigma;
-        const hi    = mu + SIGMA * sigma;
+        const stats = voiceStats.markers?.[fn];
+        if (!stats) { result[fn] = val; continue; }
+        // Élargir légèrement les bornes p10/p90 pour tolérer les extrêmes légitimes
+        const margin = (stats.p90 - stats.p10) * 0.15;
+        const lo = Math.max(50,  stats.p10 - margin);
+        const hi = Math.min(5000, stats.p90 + margin);
         if (val > 0 && val >= lo && val <= hi) {
-            result[fn] = val; // dans la plage → conserver
+            result[fn] = val; // dans la plage empirique → conserver
         } else {
-            // Hors plage → chercher le pic alternatif le plus fort dans la zone calibrée
+            // Hors plage → chercher le pic le plus fort dans la zone calibrée
             const alt = peaks
                 .filter(p => p.freq >= lo && p.freq <= hi)
                 .sort((a, b) => b.mag - a.mag)[0];
@@ -301,13 +354,14 @@ export function loadBaselineFromConfig(userId, getUserConfig) {
             dbStd: cal.dbStd || 0,
             freqMean: cal.freqMean || { low: 0, mid: 0, high: 0 },
             freqStd: cal.freqStd || { low: 0, mid: 0, high: 0 },
-            formantMean: cal.formantMean || { f1: 500, f2: 1500, f3: 2500 },
-            formantStd:  cal.formantStd  || { f1: 80,  f2: 150,  f3: 200  },
-            formantSampleCount: cal.formantSampleCount || 0,
             sampleCount: cal.sampleCount || 0,
             lastUpdate: Date.now(),
             dirty: false,
         });
+        // Restaurer les stats du profil vocal depuis la DB (si disponibles)
+        if (cfg.voiceProfile && cfg.voiceProfile.n >= PROFILE_MIN_SAMPLES) {
+            voiceStatsCache.set(userId, cfg.voiceProfile);
+        }
     } catch {}
 }
 
@@ -334,19 +388,13 @@ export function startBaselinePersistence(getUserConfig, upsertUser) {
                         mid: Math.round(bl.freqStd.mid * 1000) / 1000,
                         high: Math.round(bl.freqStd.high * 1000) / 1000,
                     },
-                    formantMean: bl.formantMean ? {
-                        f1: Math.round(bl.formantMean.f1),
-                        f2: Math.round(bl.formantMean.f2),
-                        f3: Math.round(bl.formantMean.f3),
-                    } : undefined,
-                    formantStd: bl.formantStd ? {
-                        f1: Math.round(bl.formantStd.f1),
-                        f2: Math.round(bl.formantStd.f2),
-                        f3: Math.round(bl.formantStd.f3),
-                    } : undefined,
-                    formantSampleCount: bl.formantSampleCount || 0,
                     sampleCount: bl.sampleCount,
                 };
+                // Persister le profil vocal passif (stats percentiles sur 10 marqueurs)
+                const vp = voiceStatsCache.get(userId);
+                if (vp && vp.n >= PROFILE_MIN_SAMPLES) {
+                    cfg.voiceProfile = { ...vp, updatedAt: new Date().toISOString() };
+                }
                 upsertUser(token, cfg.displayName || '???', JSON.stringify(cfg));
             } catch {}
         }
@@ -402,8 +450,8 @@ export function subscribeUser(receiver, userId, displayName, { manualEmotion, ge
             const freqResult = computeFreqBands(orderedBuf);
             const freq = { low: freqResult.low, mid: freqResult.mid, high: freqResult.high };
             const centroid = freqResult.centroid;
-            // Passer le profil vocal calibré pour l'affinage adaptatif des formants
-            const formants = computeFormants(orderedBuf, userBaseline.get(userId));
+            // Passer les stats du profil passif pour l'affinage adaptatif des formants
+            const formants = computeFormants(orderedBuf, voiceStatsCache.get(userId));
 
             // ZCR (Zero Crossing Rate) — rugosité/agressivité vocale
             let zc = 0;
@@ -442,10 +490,6 @@ export function subscribeUser(receiver, userId, displayName, { manualEmotion, ge
                     bl = {
                         dbMean: avgDb, dbStd: 0,
                         freqMean: { ...freq }, freqStd: { low: 0, mid: 0, high: 0 },
-                        // Valeurs initiales des formants : plages génériques voix humaine
-                        formantMean: { f1: 500, f2: 1500, f3: 2500 },
-                        formantStd:  { f1: 80,  f2: 150,  f3: 200  },
-                        formantSampleCount: 0,
                         sampleCount: 0, lastUpdate: now, dirty: false,
                     };
                     userBaseline.set(userId, bl);
@@ -459,25 +503,18 @@ export function subscribeUser(receiver, userId, displayName, { manualEmotion, ge
                     bl.freqMean[band] += a * (freq[band] - prev);
                     bl.freqStd[band] = Math.sqrt((1 - a) * (bl.freqStd[band] ** 2 + a * (freq[band] - prev) ** 2));
                 }
-                // Mise à jour EMA des formants — uniquement sur les frames avec parole réelle (f1 > 0)
-                if (formants.f1 > 0) {
-                    if (!bl.formantMean) {
-                        bl.formantMean = { f1: formants.f1, f2: formants.f2, f3: formants.f3 };
-                        bl.formantStd  = { f1: 80, f2: 150, f3: 200 };
-                    }
-                    for (const fn of ['f1', 'f2', 'f3']) {
-                        if (formants[fn] > 0) {
-                            const prevFn = bl.formantMean[fn];
-                            bl.formantMean[fn] += FORMANT_ALPHA * (formants[fn] - prevFn);
-                            bl.formantStd[fn]   = Math.sqrt(
-                                (1 - FORMANT_ALPHA) * (bl.formantStd[fn] ** 2 + FORMANT_ALPHA * (formants[fn] - prevFn) ** 2)
-                            );
-                        }
-                    }
-                    bl.formantSampleCount = (bl.formantSampleCount || 0) + 1;
-                }
                 bl.lastUpdate = now;
                 bl.dirty = true;
+            }
+
+            // ── Profil vocal passif — alimentation automatique pendant la parole ──
+            // Uniquement sur les frames avec parole réelle (db > seuil bruit OU formant détecté)
+            if (avgDb > -60 || formants.f1 > 0) {
+                _pushVoiceProfile(userId, {
+                    db: avgDb, zcr, centroid, energyVar,
+                    freq_low: freq.low, freq_mid: freq.mid, freq_high: freq.high,
+                    f1: formants.f1, f2: formants.f2, f3: formants.f3,
+                });
             }
 
             // Détection d'émotion : manuelle (prioritaire) ou automatique (empreintes)
@@ -509,16 +546,6 @@ export function subscribeUser(receiver, userId, displayName, { manualEmotion, ge
                 displayName,
                 updated: now,
             });
-
-            // Accumulation d'empreinte vocale si enregistrement actif (feature premium)
-            const recSession = recordingSessions.get(fpToken);
-            if (recSession && now - recSession.startedAt < recSession.durationMs) {
-                recSession.samples.push({
-                    db: Math.round(avgDb * 100) / 100,
-                    freq: { ...freq }, zcr, centroid, energyVar,
-                    formants: { ...formants },
-                });
-            }
 
             sumSq = 0;
             sampleCount = 0;

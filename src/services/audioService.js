@@ -14,16 +14,41 @@
  */
 
 // Niveaux audio courants par utilisateur, mis à jour toutes les ~50ms
-export const userLevels       = new Map(); // userId → { db, speaking, freq, ... }
+export const userLevels       = new Map(); // userId → { db, speaking, freq, formants, ... }
 
 // Historique glissant pour le lissage temporel (fenêtre de 100 ticks ~5s)
 export const userFreqHistory  = new Map(); // userId → [{ db, freq, ts }]
 
-// Baseline acoustique calculée à partir de l'historique (dbMean, dbStd, etc.)
-export const userBaseline     = new Map(); // userId → { dbMean, dbStd, ... }
+// Baseline acoustique EMA (dB + bandes de fréquence) pour l'auto-seuillage
+export const userBaseline     = new Map(); // userId → { dbMean, dbStd, freqMean, freqStd, ... }
 
-// Sessions d'enregistrement d'empreintes vocales (feature premium)
-export const recordingSessions = new Map(); // token → { samples, startedAt }
+// ── Profil vocal passif ──────────────────────────────────────────────────────
+// Enregistrement automatique de 10 marqueurs spectraux/fréquentiels pendant la parole.
+// Aucune action utilisateur requise — s'auto-construit par écoute passive.
+// Format DB : cfg.voiceProfile = { n, markers: { [key]: { min,p10,p25,p50,p75,p90,max,mean } }, updatedAt }
+
+// 10 marqueurs couvrant les dimensions clés de la voix humaine
+export const PROFILE_MARKERS = [
+    'db',        // niveau sonore moyen (dB)
+    'zcr',       // zero-crossing rate (rugosité/agressivité)
+    'centroid',  // centroïde spectral (brillance/aigu)
+    'energyVar', // variance d'énergie (stabilité)
+    'freq_low',  // énergie basse fréquence (fondamentale)
+    'freq_mid',  // énergie médium (présence vocale)
+    'freq_high', // énergie haute (sibilance/tension)
+    'f1',        // 1er formant — ouverture / arousal
+    'f2',        // 2ème formant — position langue / valence
+    'f3',        // 3ème formant — tension vocale
+];
+export const PROFILE_BUF_SIZE    = 1000; // ~50s de parole à 50ms/tick, fenêtre glissante
+export const PROFILE_STATS_EVERY = 50;   // recalculer les stats tous les 50 nouveaux samples
+
+// Buffers circulaires bruts (mémoire) — un Float32Array par marqueur par user
+export const voiceProfiles   = new Map(); // userId → { bufs, head, filled, total, dirty }
+
+// Cache des stats calculées (min/p10..p90/max/mean) — mis à jour tous les PROFILE_STATS_EVERY ticks
+// Utilisé par computeFormants() pour l'affinage adaptatif sans tri en hot-path
+export const voiceStatsCache  = new Map(); // userId → { n, markers: { [key]: stats } }
 
 // Config audio centralisée — référence unique pour les constantes du pipeline
 export const AUDIO = {
