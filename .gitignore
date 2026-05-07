@@ -3,3 +3,7 @@
 node_modules/
 images/
 meta/
+data/
+
+# Claude conversation history
+.claude/conversations/
