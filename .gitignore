@@ -3,3 +3,11 @@
 node_modules/
 images/
 meta/
+data/
+pngtuber.db
+pngtuber.db-shm
+pngtuber.db-wal
+voice-state.json
+
+# Claude conversation history
+.claude/conversations/
