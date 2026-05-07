@@ -98,8 +98,36 @@ export async function handleCreateInvitation(req, res, ctx) {
 export async function handleAcceptInvitation(req, res, ctx) {
     const inv = invitations.get.get(ctx.params.id);
     if (!inv || inv.status !== 'pending') return json(res, { error: 'Invitation invalide' }, 400, req);
-    invitations.updateStatus.run('accepted', ctx.params.id);
+
+    // Verif ownership pour invitations ciblees : seul l'invite designe peut accepter.
+    // Sans ce check, n'importe quel user authentifie pouvait hijacker une invitation
+    // s'il connaissait l'UUID.
+    if (inv.invited_discord_id && inv.invited_discord_id !== ctx.session.discordId) {
+        return json(res, { error: 'Cette invitation ne vous est pas destinee' }, 403, req);
+    }
+
+    // Verif expiration
+    if (inv.expires_at && new Date(inv.expires_at).getTime() < Date.now()) {
+        return json(res, { error: 'Invitation expiree' }, 400, req);
+    }
+
+    // Verif compteur d'usages pour les liens ouverts
+    if ((inv.use_count ?? 0) >= (inv.max_uses ?? 1)) {
+        return json(res, { error: 'Invitation epuisee' }, 400, req);
+    }
+
+    // Empecher de s'auto-inviter (doublon avec session.discordId === inviter)
+    if (inv.invited_by === ctx.session.discordId) {
+        return json(res, { error: 'Vous ne pouvez pas accepter votre propre invitation' }, 400, req);
+    }
+
+    // Pour les invitations ciblees : status passe a 'accepted'.
+    // Pour les liens ouverts : status reste 'pending', seul use_count s'incremente.
+    if (inv.invited_discord_id) {
+        invitations.updateStatus.run('accepted', ctx.params.id);
+    }
     invitations.incrementUse.run(ctx.params.id);
+
     // Ajouter l'accepteur comme participant avec son token
     const token = tokenFor(ctx.session.discordId);
     participants.add.run(inv.session_id, ctx.session.discordId, token, 'participant');
@@ -108,6 +136,12 @@ export async function handleAcceptInvitation(req, res, ctx) {
 
 // POST /api/invitations/:id/decline
 export async function handleDeclineInvitation(req, res, ctx) {
+    const inv = invitations.get.get(ctx.params.id);
+    if (!inv || inv.status !== 'pending') return json(res, { error: 'Invitation invalide' }, 400, req);
+    // Verif ownership : seul l'invite designe peut decliner une invitation ciblee.
+    if (inv.invited_discord_id && inv.invited_discord_id !== ctx.session.discordId) {
+        return json(res, { error: 'Cette invitation ne vous est pas destinee' }, 403, req);
+    }
     invitations.updateStatus.run('declined', ctx.params.id);
     json(res, { ok: true }, 200, req);
 }

@@ -19,6 +19,7 @@
 import { json } from '../http/helpers.js';
 import { permissions as permRepo } from '../db/repos/permissions.js';
 import { users as userRepo, frames as frameRepo } from '../db/repos/users.js';
+import { isValidTokenFormat } from '../services/tokenService.js';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -75,12 +76,16 @@ export async function handleDbFrames(req, res, ctx) {
 // POST /delete-user/:token
 export async function handleDeleteUser(req, res, ctx) {
     const { token } = ctx.params;
-    userRepo.get.get(token); // vérifier existence (non utilisé mais conservé pour la logique)
+    // Validation stricte du format token avant toute operation fichier (defense-in-depth).
+    if (!isValidTokenFormat(token)) return json(res, { error: 'token invalide' }, 400, req);
+    if (!userRepo.get.get(token)) return json(res, { error: 'Utilisateur introuvable' }, 404, req);
+
     frameRepo.deleteAll.run(token);
-    // Supprimer le dossier d'images si l'utilisateur existe
-    userRepo.get.get(token) && (() => {
-        try { fs.rmSync(path.join(IMAGES_DIR, token), { recursive: true, force: true }); } catch {}
-    })();
+    // Supprimer le dossier d'images
+    const userImageDir = path.resolve(path.join(IMAGES_DIR, token));
+    if (userImageDir.startsWith(path.resolve(IMAGES_DIR))) {
+        try { fs.rmSync(userImageDir, { recursive: true, force: true }); } catch {}
+    }
     // Import dynamique pour éviter une dépendance circulaire au niveau module
     const db = (await import('../db/database.js')).db;
     db.prepare('DELETE FROM users WHERE token = ?').run(token);

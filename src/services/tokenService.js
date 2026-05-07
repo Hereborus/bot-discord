@@ -17,6 +17,14 @@ import { users } from '../db/repos/users.js';
 const tokenToUid = new Map(); // token → userId
 const uidToToken = new Map(); // userId → token
 
+// Format strict d'un token HMAC : 16 chars hex.
+// Validation belt-and-suspenders avant toute operation fichier (defense-in-depth
+// par rapport aux checks `path.resolve` + `startsWith` deja en place).
+export const SAFE_TOKEN = /^[a-f0-9]{16}$/i;
+export function isValidTokenFormat(token) {
+    return typeof token === 'string' && SAFE_TOKEN.test(token);
+}
+
 // Lu lazily pour éviter que le module soit initialisé avant dotenv.config()
 function hashUid(userId) {
     return crypto

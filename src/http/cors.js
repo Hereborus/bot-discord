@@ -48,12 +48,10 @@ export function corsHeaders(req) {
     if (origin && allowed.includes(origin)) {
         // Retourner l'origine exacte plutôt que * — requis avec credentials
         headers['Access-Control-Allow-Origin'] = origin;
-    } else if (!origin) {
-        // Pas d'origine = requête directe (curl, OBS browser source) → wildcard OK
-        headers['Access-Control-Allow-Origin'] = '*';
-        delete headers['Access-Control-Allow-Credentials'];
     }
-    // Si origin non autorisée : aucun header CORS → le navigateur bloquera
+    // Pas d'origine OU origine non whitelistee : aucun header Access-Control-Allow-Origin.
+    // Les requetes "directes" (curl, OBS browser source) reussissent quand meme cote serveur,
+    // mais aucune page malveillante ne peut profiter d'un fallback wildcard.
     return headers;
 }
 
