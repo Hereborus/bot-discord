@@ -2,6 +2,8 @@
 
 > Plan priorise des ameliorations issu de l'audit complet du 2026-05-07.
 > Mise a jour au fil de la PR `release/v2-with-fixes`.
+>
+> **📋 Pour le plan detaille et actionnable des items ⏳ ci-dessous (avec localisation exacte, plan etape par etape, code snippets et estimations), voir [REMAINING-WORK.md](REMAINING-WORK.md).**
 
 Legende : ✅ fait dans cette PR · 🚧 partiel · ⏳ a faire · ⏭️ defere
 
