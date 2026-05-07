@@ -133,7 +133,7 @@ export async function handleAuthCallback(req, res, ctx) {
         const redirectTo = nextUrl || '/';
         if (role === 'admin' || role === 'client') {
             const sessionId = createSession(discordUser, userGuildIds);
-            setSessionCookie(res, sessionId, BASE_URL);
+            setSessionCookie(res, sessionId, BASE_URL, req);
             res.writeHead(302, { Location: redirectTo });
             res.end();
         } else {

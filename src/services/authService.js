@@ -10,17 +10,66 @@
  * timingSafeEqual est utilisé pour la vérification des signatures
  * afin d'éviter les attaques par analyse du temps de réponse.
  *
- * Dépendances : node:crypto, db/repos/permissions, db/repos/appTokens
+ * Dépendances : node:crypto, node:fs, node:path, db/repos/permissions, db/repos/appTokens
  */
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { permissions } from '../db/repos/permissions.js';
 import { appTokens } from '../db/repos/appTokens.js';
 
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
-export const sessions     = new Map(); // sessionId → { discordId, username, role, ... }
-export const oauthStates  = new Map(); // state → { expiresAt, redirect? }
 // AUTH_ENABLED = false si DISCORD_CLIENT_ID absent → toutes les routes sont accessibles sans login
 export const AUTH_ENABLED = Boolean(process.env.DISCORD_CLIENT_ID && process.env.DISCORD_CLIENT_SECRET);
+
+// ── Garde-fou production ────────────────────────────────────────
+// Refuse de démarrer en NODE_ENV=production sans auth, sauf override explicite.
+// Empêche un déploiement accidentel sans DISCORD_CLIENT_ID d'exposer admin au monde.
+if (!AUTH_ENABLED && process.env.NODE_ENV === 'production' && process.env.ALLOW_NO_AUTH !== 'true') {
+    console.error(`
+═══════════════════════════════════════════════════════════════
+  REFUS DE DEMARRAGE — Auth desactivee en mode production
+═══════════════════════════════════════════════════════════════
+  DISCORD_CLIENT_ID / DISCORD_CLIENT_SECRET absents.
+  Sans ces variables, AUCUNE authentification n'est appliquee
+  et toutes les routes admin seraient publiques.
+
+  Recommande :
+    Configurer DISCORD_CLIENT_ID + DISCORD_CLIENT_SECRET dans .env
+
+  Override explicite (a vos risques, dev seulement) :
+    ALLOW_NO_AUTH=true npm start
+═══════════════════════════════════════════════════════════════
+`);
+    process.exit(1);
+}
+
+// ── SESSION_SECRET persistant ───────────────────────────────────
+// Si non défini en env, on persiste un secret aléatoire dans data/.session-secret
+// pour que les sessions survivent au redémarrage du process.
+const DATA_ROOT = process.env.DATA_ROOT || process.cwd();
+function loadOrCreateSessionSecret() {
+    if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
+    const secretFile = path.join(DATA_ROOT, '.session-secret');
+    try {
+        if (fs.existsSync(secretFile)) {
+            const stored = fs.readFileSync(secretFile, 'utf8').trim();
+            if (stored.length === 64 && /^[0-9a-f]+$/i.test(stored)) return stored;
+        }
+    } catch {}
+    const fresh = crypto.randomBytes(32).toString('hex');
+    try {
+        fs.mkdirSync(DATA_ROOT, { recursive: true });
+        fs.writeFileSync(secretFile, fresh, { encoding: 'utf8', mode: 0o600 });
+    } catch (err) {
+        console.warn(`⚠ SESSION_SECRET non-persiste (data dir non accessible): ${err.message}`);
+        console.warn(`  Les sessions seront invalidees au prochain redemarrage.`);
+    }
+    return fresh;
+}
+const SESSION_SECRET = loadOrCreateSessionSecret();
+
+export const sessions     = new Map(); // sessionId → { discordId, username, role, ... }
+export const oauthStates  = new Map(); // state → { expiresAt, redirect? }
 
 // ── Cookies signés ───────────────────────────────────────────────
 // Format : "<valeur>.<signature_base64url>"
@@ -77,11 +126,15 @@ export function createSession(discordUser, userGuildIds = []) {
     return id;
 }
 
-export function setSessionCookie(res, sessionId, baseUrl) {
+export function setSessionCookie(res, sessionId, baseUrl, req = null) {
     const signed  = sign(sessionId);
     const maxAge  = 7 * 24 * 60 * 60;
-    // Secure uniquement si le site est servi en HTTPS
-    const secure  = baseUrl.startsWith('https://') ? '; Secure' : '';
+    // Secure si TLS détecté : soit BASE_URL en https://, soit X-Forwarded-Proto=https
+    // (uniquement si TRUST_PROXY=true pour éviter le spoof par le client direct).
+    const trustProxy = process.env.TRUST_PROXY === 'true';
+    const proxyProto = trustProxy ? req?.headers?.['x-forwarded-proto'] : null;
+    const isHttps    = proxyProto === 'https' || baseUrl.startsWith('https://');
+    const secure     = isHttps ? '; Secure' : '';
     res.setHeader('Set-Cookie', `pngtuber_session=${signed}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`);
 }
 

@@ -20,7 +20,7 @@ import path from 'path';
 import fs from 'fs';
 import sharp from 'sharp';
 import { json, readBody } from '../http/helpers.js';
-import { uidFor } from '../services/tokenService.js';
+import { uidFor, isValidTokenFormat } from '../services/tokenService.js';
 import { TIER_LIMITS } from '../services/tierService.js';
 
 // ── Expressions régulières de sécurité ───────────────────────────
@@ -112,6 +112,8 @@ export async function handleUpload(req, res, ctx, { stmts, db, IMAGES_DIR, rateL
         for (const p of parts) if (!p.filename) fields[p.name] = p.data.toString();
         const imgPart = parts.find(p => p.filename);
         const { token, stateKey } = fields;
+        if (!isValidTokenFormat(token))
+            return json(res, { error: 'token invalide (format)' }, 400, req);
         if ((!uidFor(token) && !isKnownToken(token)) || !stateKey || !imgPart)
             return json(res, { error: 'token invalide, stateKey ou image manquant' }, 400, req);
         if (!SAFE_STATE_KEY.test(stateKey))
@@ -191,6 +193,8 @@ export async function handleUpload(req, res, ctx, { stmts, db, IMAGES_DIR, rateL
 export async function handleReorder(req, res, ctx, { stmts, db, isKnownToken }) {
     try {
         const { token, stateKey, order } = ctx._parsedBody || JSON.parse((await readBody(req)).toString());
+        if (!isValidTokenFormat(token))
+            return json(res, { error: 'token invalide (format)' }, 400, req);
         if ((!uidFor(token) && !isKnownToken(token)) || !stateKey || !Array.isArray(order))
             return json(res, { error: 'params manquants' }, 400, req);
         const updateOrder = db.transaction(files => {
@@ -213,6 +217,8 @@ export async function handleReorder(req, res, ctx, { stmts, db, isKnownToken }) 
 export async function handleDeleteFrame(req, res, ctx, { stmts, IMAGES_DIR, isKnownToken, broadcastFrameUpdate }) {
     try {
         const { token, stateKey, file } = ctx._parsedBody || JSON.parse((await readBody(req)).toString());
+        if (!isValidTokenFormat(token))
+            return json(res, { error: 'token invalide (format)' }, 400, req);
         if ((!uidFor(token) && !isKnownToken(token)) || !stateKey || !file)
             return json(res, { error: 'params manquants' }, 400, req);
         if (!SAFE_STATE_KEY.test(stateKey) || !SAFE_FILENAME.test(file))
@@ -237,6 +243,8 @@ export async function handleDeleteFrame(req, res, ctx, { stmts, IMAGES_DIR, isKn
 export async function handleMoveFrame(req, res, ctx, { stmts, IMAGES_DIR, isKnownToken, broadcastFrameUpdate }) {
     try {
         const { token, file, fromState, toState } = ctx._parsedBody || JSON.parse((await readBody(req)).toString());
+        if (!isValidTokenFormat(token))
+            return json(res, { error: 'token invalide (format)' }, 400, req);
         if (!token || !file || !fromState || !toState)
             return json(res, { error: 'params manquants' }, 400, req);
         if (!SAFE_STATE_KEY.test(fromState) || !SAFE_STATE_KEY.test(toState) || !SAFE_FILENAME.test(file))

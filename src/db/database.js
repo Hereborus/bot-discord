@@ -1,18 +1,22 @@
 /**
- * Database — initialisation SQLite et schéma
- * ============================================
+ * Database — initialisation SQLite + schema initial + runner de migrations
+ * =========================================================================
  * Exporte une instance `db` unique (singleton de module ES). Tous les
  * repositories importent cette même instance — une seule connexion est
  * partagée, ce qui est correct pour SQLite en mono-processus.
  *
- * Le schéma est déclaré ici avec CREATE TABLE IF NOT EXISTS : idempotent
- * au démarrage, pas de système de migrations versionné.
+ * Le schema initial reste idempotent (CREATE IF NOT EXISTS). Les evolutions
+ * de schema posterieures passent par le runner de migrations (voir bas du
+ * fichier) qui applique les fichiers SQL versionnes de src/db/migrations/
+ * dans l'ordre lexicographique. Une table _migrations garde la trace de
+ * ce qui est applique pour eviter les replays.
  *
- * Dépendances : better-sqlite3, node:path, node:fs
+ * Dépendances : better-sqlite3, node:path, node:fs, node:url
  */
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const DATA_ROOT = process.env.DATA_ROOT || process.cwd();
 // Créer le répertoire si nécessaire (premier lancement Docker)
@@ -143,4 +147,49 @@ db.exec(`
     CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(discord_id, read);
 `);
 
-console.log('✓ SQLite initialisé:', DB_PATH);
+// ── Runner de migrations versionnees ────────────────────────────
+// Les migrations sont des fichiers SQL dans src/db/migrations/, nommes
+// avec un prefixe lexicographiquement ordonne (ex: 001_add_foo.sql,
+// 002_add_bar.sql). Le runner applique celles non-encore appliquees.
+//
+// Pour ajouter une migration : cree un fichier 00X_description.sql dans
+// src/db/migrations/, idempotent (CREATE IF NOT EXISTS, ALTER TABLE..ADD
+// COLUMN IF NOT EXISTS via PRAGMA, etc.). Le runner l'applique en transaction.
+db.exec(`
+    CREATE TABLE IF NOT EXISTS _migrations (
+        name        TEXT PRIMARY KEY,
+        applied_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+`);
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
+
+function runMigrations() {
+    if (!fs.existsSync(MIGRATIONS_DIR)) return; // pas de migrations -> ok
+    const applied = new Set(
+        db.prepare('SELECT name FROM _migrations').all().map(r => r.name)
+    );
+    const files = fs.readdirSync(MIGRATIONS_DIR)
+        .filter(f => f.endsWith('.sql'))
+        .sort();
+    for (const file of files) {
+        if (applied.has(file)) continue;
+        const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
+        const tx = db.transaction(() => {
+            db.exec(sql);
+            db.prepare('INSERT INTO _migrations(name) VALUES (?)').run(file);
+        });
+        try {
+            tx();
+            console.log(`  ↳ migration appliquee : ${file}`);
+        } catch (err) {
+            console.error(`  ✗ migration ECHEC ${file}: ${err.message}`);
+            throw err; // refus de demarrer si une migration echoue
+        }
+    }
+}
+
+runMigrations();
+
+console.log('✓ SQLite initialise:', DB_PATH);
