@@ -5,7 +5,8 @@
  *
  * Chaîne : Opus (Discord) → PCM 16-bit stéréo 48kHz (prism-media)
  *          → RMS/dB → lissage glissant → FFT (fft-js) → bandes de fréquences
- *          → ZCR → Energy Variance → Centroïde spectral → baseline EMA
+ *          → ZCR → Energy Variance → Centroïde spectral → LPC → formants
+ *          → baseline EMA
  *
  * Métriques calculées toutes les 50ms (AUDIO.sampleInterval) :
  *   - db / rms    : niveau sonore instantané et lissé
@@ -14,6 +15,7 @@
  *   - zcr         : Zero Crossing Rate (rugosité vocale)
  *   - centroid    : centroïde spectral (brillance)
  *   - energyVar   : variance d'énergie (stabilité volume)
+ *   - formants    : formants vocaux F1/F2/F3 via LPC ordre 12 (Levinson-Durbin)
  *
  * La baseline vocale (EMA, alpha=0.005) est persistée dans la config
  * utilisateur toutes les 60s pour alimenter la calibration automatique.
@@ -34,6 +36,17 @@ const { fft, util: fftUtil } = fftPkg;
 
 // Coefficient de lissage de la baseline vocale (~10s de convergence à 20Hz)
 const BASELINE_ALPHA = 0.005;
+
+// ── Constantes LPC — analyse des formants vocaux ──────────────────────────
+const LPC_ORDER  = 12;  // ordre du prédicteur (standard pour la voix à 48kHz)
+const LPC_N_EVAL = 512; // points d'évaluation de l'enveloppe spectrale
+
+// Buffers pré-alloués (évite la pression GC à chaque tick 50ms)
+const _lpcX    = new Float64Array(1024); // signal pré-accentué + fenêtré
+const _lpcR    = new Float64Array(LPC_ORDER + 1); // autocorrélation R[0..p]
+const _lpcA    = new Float64Array(LPC_ORDER + 1); // coefficients LPC a[1..p]
+const _lpcPrev = new Float64Array(LPC_ORDER + 1); // copie itération précédente
+const _lpcEnv  = new Float64Array(LPC_N_EVAL);    // enveloppe spectrale 1/|A(ω)|
 
 // ── Hystérésis d'émotion ──────────────────────────────────────────────────
 // Évite les changements trop rapides : requiert N confirmations consécutives
@@ -111,6 +124,7 @@ function detectEmotionFromFingerprints(token, features, getUserConfig) {
         for (const f of Object.keys(fp)) {
             let current;
             if (f.startsWith('freq_')) current = features.freq?.[f.slice(5)];
+            else if (f.startsWith('formant_')) current = features.formants?.[f.slice(8)];
             else current = features[f];
             if (current === undefined || current === null) continue;
             const std = fp[f].std || 0.001;
@@ -155,6 +169,83 @@ export function computeFreqBands(buffer) {
     } catch {
         return { low: 0, mid: 0, high: 0, centroid: 0 };
     }
+}
+
+// ── LPC — formants vocaux F1/F2/F3 ───────────────────────────────────────
+// Méthode : pré-accentuation → fenêtrage Hann → autocorrélation →
+//           Levinson-Durbin → évaluation |H(ω)| sur demi-cercle unité →
+//           détection des pics locaux = formants.
+//
+// F1 (250–1000 Hz) corrèle avec l'ouverture de la bouche / l'arousal émotionnel.
+// F2 (800–2500 Hz) corrèle avec la position de la langue / la valence.
+// F3 (1500–3500 Hz) discrimine voix tendues vs relâchées.
+export function computeFormants(buffer) {
+    const N = Math.min(1024, buffer.length);
+    if (N < LPC_ORDER * 4) return { f1: 0, f2: 0, f3: 0 };
+
+    // Pré-accentuation : H(z) = 1 − 0.97z⁻¹  (compense le roll-off vocal)
+    _lpcX[0] = buffer[0];
+    for (let i = 1; i < N; i++) _lpcX[i] = buffer[i] - 0.97 * buffer[i - 1];
+
+    // Fenêtre de Hann (réduit les artefacts de bord FFT/LPC)
+    for (let i = 0; i < N; i++) {
+        _lpcX[i] *= 0.5 * (1 - Math.cos(2 * Math.PI * i / (N - 1)));
+    }
+
+    // Autocorrélation R[0..LPC_ORDER]
+    for (let lag = 0; lag <= LPC_ORDER; lag++) {
+        let s = 0;
+        for (let i = 0; i < N - lag; i++) s += _lpcX[i] * _lpcX[i + lag];
+        _lpcR[lag] = s;
+    }
+    if (_lpcR[0] < 1e-10) return { f1: 0, f2: 0, f3: 0 }; // silence
+
+    // Levinson-Durbin : R[0..p] → coefficients LPC a[1..p]
+    _lpcA.fill(0);
+    let e = _lpcR[0];
+    for (let m = 1; m <= LPC_ORDER; m++) {
+        let sum = _lpcR[m];
+        for (let j = 1; j < m; j++) sum += _lpcA[j] * _lpcR[m - j];
+        const k = -sum / e;
+        for (let j = 1; j < m; j++) _lpcPrev[j] = _lpcA[j];
+        for (let j = 1; j < m; j++) _lpcA[j] = _lpcPrev[j] + k * _lpcPrev[m - j];
+        _lpcA[m] = k;
+        e *= (1 - k * k);
+        if (e <= 1e-10) break;
+    }
+
+    // Évaluation de l'enveloppe spectrale |H(ω)| = 1/|A(ω)| sur 250–4500 Hz
+    const binHz = 48000 / (2 * LPC_N_EVAL); // ~46.875 Hz par bin
+    const minBin = Math.max(1, Math.floor(250 / binHz));
+    const maxBin = Math.min(LPC_N_EVAL - 1, Math.ceil(4500 / binHz));
+
+    for (let k = minBin; k <= maxBin; k++) {
+        const omega = Math.PI * k / LPC_N_EVAL;
+        let re = 1, im = 0;
+        for (let j = 1; j <= LPC_ORDER; j++) {
+            re += _lpcA[j] * Math.cos(j * omega);
+            im -= _lpcA[j] * Math.sin(j * omega);
+        }
+        const mag = Math.sqrt(re * re + im * im);
+        _lpcEnv[k] = mag > 1e-10 ? 1.0 / mag : 0;
+    }
+
+    // Détection des maxima locaux → formants
+    const peaks = [];
+    for (let k = minBin + 1; k < maxBin; k++) {
+        if (_lpcEnv[k] > _lpcEnv[k - 1] && _lpcEnv[k] > _lpcEnv[k + 1]) {
+            peaks.push({ freq: Math.round(k * binHz), mag: _lpcEnv[k] });
+        }
+    }
+    // Garder les 5 pics les plus forts, puis trier par fréquence croissante → F1 < F2 < F3
+    peaks.sort((a, b) => b.mag - a.mag);
+    const top = peaks.slice(0, 5).sort((a, b) => a.freq - b.freq);
+
+    return {
+        f1: top[0]?.freq || 0,
+        f2: top[1]?.freq || 0,
+        f3: top[2]?.freq || 0,
+    };
 }
 
 // ── Chargement de la baseline persistée ─────────────────────────────────
@@ -258,6 +349,7 @@ export function subscribeUser(receiver, userId, displayName, { manualEmotion, ge
             const freqResult = computeFreqBands(orderedBuf);
             const freq = { low: freqResult.low, mid: freqResult.mid, high: freqResult.high };
             const centroid = freqResult.centroid;
+            const formants = computeFormants(orderedBuf);
 
             // ZCR (Zero Crossing Rate) — rugosité/agressivité vocale
             let zc = 0;
@@ -322,21 +414,21 @@ export function subscribeUser(receiver, userId, displayName, { manualEmotion, ge
                 if (Date.now() - manual.setAt > MANUAL_EMOTION_TIMEOUT_MS) {
                     manualEmotion.delete(fpToken);
                     detectedEmotion = detectEmotionFromFingerprints(fpToken, {
-                        db: Math.round(avgDb * 100) / 100, freq, zcr, centroid, energyVar,
+                        db: Math.round(avgDb * 100) / 100, freq, zcr, centroid, energyVar, formants,
                     }, getUserConfig);
                 } else {
                     detectedEmotion = manual.emotion;
                 }
             } else {
                 detectedEmotion = detectEmotionFromFingerprints(fpToken, {
-                    db: Math.round(avgDb * 100) / 100, freq, zcr, centroid, energyVar,
+                    db: Math.round(avgDb * 100) / 100, freq, zcr, centroid, energyVar, formants,
                 }, getUserConfig);
             }
 
             userLevels.set(userId, {
                 db: Math.round(avgDb * 100) / 100,
                 rms: Math.round(rms * 10000) / 10000,
-                freq, freqDelta, zcr, centroid, energyVar,
+                freq, freqDelta, zcr, centroid, energyVar, formants,
                 detectedEmotion,
                 speaking: true,
                 displayName,
@@ -349,6 +441,7 @@ export function subscribeUser(receiver, userId, displayName, { manualEmotion, ge
                 recSession.samples.push({
                     db: Math.round(avgDb * 100) / 100,
                     freq: { ...freq }, zcr, centroid, energyVar,
+                    formants: { ...formants },
                 });
             }
 
