@@ -58,7 +58,7 @@ export function UserSettingsModal({ token, onClose, toast }) {
     const base  = getApiBase();
     const saved = localStorage.getItem('pngtuber-canvasSize');
     const size  = saved ? JSON.parse(saved) : { w: 800, h: 800 };
-    window.open(`${base}/positioner.html?t=${encodeURIComponent(token)}&state=${encodeURIComponent(stateKey)}&w=${size.w}&h=${size.h}`, '_blank');
+    window.open(`${base}/positioner?t=${encodeURIComponent(token)}&state=${encodeURIComponent(stateKey)}&w=${size.w}&h=${size.h}`, '_blank');
   }
 
   return (
