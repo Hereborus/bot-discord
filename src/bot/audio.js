@@ -36,6 +36,10 @@ const { fft, util: fftUtil } = fftPkg;
 
 // Coefficient de lissage de la baseline vocale (~10s de convergence à 20Hz)
 const BASELINE_ALPHA = 0.005;
+// Alpha plus lent pour les formants : caractéristiques vocales très stables entre les sessions
+const FORMANT_ALPHA  = 0.002;
+// Nombre minimum d'échantillons formants avant d'activer le filtrage adaptatif
+const FORMANT_BASELINE_MIN_SAMPLES = 100;
 
 // ── Constantes LPC — analyse des formants vocaux ──────────────────────────
 const LPC_ORDER  = 12;  // ordre du prédicteur (standard pour la voix à 48kHz)
@@ -179,7 +183,7 @@ export function computeFreqBands(buffer) {
 // F1 (250–1000 Hz) corrèle avec l'ouverture de la bouche / l'arousal émotionnel.
 // F2 (800–2500 Hz) corrèle avec la position de la langue / la valence.
 // F3 (1500–3500 Hz) discrimine voix tendues vs relâchées.
-export function computeFormants(buffer) {
+export function computeFormants(buffer, voiceProfile = null) {
     const N = Math.min(1024, buffer.length);
     if (N < LPC_ORDER * 4) return { f1: 0, f2: 0, f3: 0 };
 
@@ -241,11 +245,46 @@ export function computeFormants(buffer) {
     peaks.sort((a, b) => b.mag - a.mag);
     const top = peaks.slice(0, 5).sort((a, b) => a.freq - b.freq);
 
-    return {
+    const raw = {
         f1: top[0]?.freq || 0,
         f2: top[1]?.freq || 0,
         f3: top[2]?.freq || 0,
     };
+
+    // Affinage adaptatif : si le profil vocal de l'user est calibré, filtrer les pics aberrants
+    if (voiceProfile && (voiceProfile.formantSampleCount || 0) >= FORMANT_BASELINE_MIN_SAMPLES) {
+        return _refineFormants(raw, peaks, voiceProfile);
+    }
+    return raw;
+}
+
+/**
+ * Valide et affine les formants bruts par rapport au profil vocal calibré de l'user.
+ * Pour chaque formant, si la valeur brute est en dehors de ±2.5σ de la baseline,
+ * on cherche un pic alternatif dans la plage calibrée.
+ * Cela améliore la précision pour les voix qui sortent des plages LPC génériques.
+ */
+function _refineFormants(raw, peaks, profile) {
+    const { formantMean, formantStd } = profile;
+    const SIGMA = 2.5;
+    const result = {};
+    for (const fn of ['f1', 'f2', 'f3']) {
+        const val   = raw[fn];
+        const mu    = formantMean[fn] || 0;
+        const sigma = Math.max(formantStd[fn] || 0, 20); // plancher 20 Hz
+        const lo    = mu - SIGMA * sigma;
+        const hi    = mu + SIGMA * sigma;
+        if (val > 0 && val >= lo && val <= hi) {
+            result[fn] = val; // dans la plage → conserver
+        } else {
+            // Hors plage → chercher le pic alternatif le plus fort dans la zone calibrée
+            const alt = peaks
+                .filter(p => p.freq >= lo && p.freq <= hi)
+                .sort((a, b) => b.mag - a.mag)[0];
+            result[fn] = alt?.freq || 0;
+        }
+    }
+    return result;
 }
 
 // ── Chargement de la baseline persistée ─────────────────────────────────
@@ -262,6 +301,9 @@ export function loadBaselineFromConfig(userId, getUserConfig) {
             dbStd: cal.dbStd || 0,
             freqMean: cal.freqMean || { low: 0, mid: 0, high: 0 },
             freqStd: cal.freqStd || { low: 0, mid: 0, high: 0 },
+            formantMean: cal.formantMean || { f1: 500, f2: 1500, f3: 2500 },
+            formantStd:  cal.formantStd  || { f1: 80,  f2: 150,  f3: 200  },
+            formantSampleCount: cal.formantSampleCount || 0,
             sampleCount: cal.sampleCount || 0,
             lastUpdate: Date.now(),
             dirty: false,
@@ -292,6 +334,17 @@ export function startBaselinePersistence(getUserConfig, upsertUser) {
                         mid: Math.round(bl.freqStd.mid * 1000) / 1000,
                         high: Math.round(bl.freqStd.high * 1000) / 1000,
                     },
+                    formantMean: bl.formantMean ? {
+                        f1: Math.round(bl.formantMean.f1),
+                        f2: Math.round(bl.formantMean.f2),
+                        f3: Math.round(bl.formantMean.f3),
+                    } : undefined,
+                    formantStd: bl.formantStd ? {
+                        f1: Math.round(bl.formantStd.f1),
+                        f2: Math.round(bl.formantStd.f2),
+                        f3: Math.round(bl.formantStd.f3),
+                    } : undefined,
+                    formantSampleCount: bl.formantSampleCount || 0,
                     sampleCount: bl.sampleCount,
                 };
                 upsertUser(token, cfg.displayName || '???', JSON.stringify(cfg));
@@ -349,7 +402,8 @@ export function subscribeUser(receiver, userId, displayName, { manualEmotion, ge
             const freqResult = computeFreqBands(orderedBuf);
             const freq = { low: freqResult.low, mid: freqResult.mid, high: freqResult.high };
             const centroid = freqResult.centroid;
-            const formants = computeFormants(orderedBuf);
+            // Passer le profil vocal calibré pour l'affinage adaptatif des formants
+            const formants = computeFormants(orderedBuf, userBaseline.get(userId));
 
             // ZCR (Zero Crossing Rate) — rugosité/agressivité vocale
             let zc = 0;
@@ -388,6 +442,10 @@ export function subscribeUser(receiver, userId, displayName, { manualEmotion, ge
                     bl = {
                         dbMean: avgDb, dbStd: 0,
                         freqMean: { ...freq }, freqStd: { low: 0, mid: 0, high: 0 },
+                        // Valeurs initiales des formants : plages génériques voix humaine
+                        formantMean: { f1: 500, f2: 1500, f3: 2500 },
+                        formantStd:  { f1: 80,  f2: 150,  f3: 200  },
+                        formantSampleCount: 0,
                         sampleCount: 0, lastUpdate: now, dirty: false,
                     };
                     userBaseline.set(userId, bl);
@@ -400,6 +458,23 @@ export function subscribeUser(receiver, userId, displayName, { manualEmotion, ge
                     const prev = bl.freqMean[band];
                     bl.freqMean[band] += a * (freq[band] - prev);
                     bl.freqStd[band] = Math.sqrt((1 - a) * (bl.freqStd[band] ** 2 + a * (freq[band] - prev) ** 2));
+                }
+                // Mise à jour EMA des formants — uniquement sur les frames avec parole réelle (f1 > 0)
+                if (formants.f1 > 0) {
+                    if (!bl.formantMean) {
+                        bl.formantMean = { f1: formants.f1, f2: formants.f2, f3: formants.f3 };
+                        bl.formantStd  = { f1: 80, f2: 150, f3: 200 };
+                    }
+                    for (const fn of ['f1', 'f2', 'f3']) {
+                        if (formants[fn] > 0) {
+                            const prevFn = bl.formantMean[fn];
+                            bl.formantMean[fn] += FORMANT_ALPHA * (formants[fn] - prevFn);
+                            bl.formantStd[fn]   = Math.sqrt(
+                                (1 - FORMANT_ALPHA) * (bl.formantStd[fn] ** 2 + FORMANT_ALPHA * (formants[fn] - prevFn) ** 2)
+                            );
+                        }
+                    }
+                    bl.formantSampleCount = (bl.formantSampleCount || 0) + 1;
                 }
                 bl.lastUpdate = now;
                 bl.dirty = true;

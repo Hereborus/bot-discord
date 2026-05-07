@@ -19,13 +19,9 @@
  * Pour réactiver : importer ce module dans index.js et enregistrer les routes.
  */
 
-// ── Dépendances (à décommenter si réactivation) ──────────────────
-// import { tokenFor, uidFor } from '../services/tokenService.js';
-// import { userBaseline, recordingSessions } from '../services/audioService.js';
-// import { json, parseJsonBody } from '../http/helpers.js';
-// import { requireAuth, requireClientOrAdmin } from '../http/middleware.js';
-// import { loadTier, requirePremium } from '../services/tierService.js';
-// import { db } from '../db/database.js';
+import { uidFor } from '../services/tokenService.js';
+import { userBaseline, recordingSessions } from '../services/audioService.js';
+import { json, parseJsonBody } from '../http/helpers.js';
 
 // ── Cache des empreintes vocales ──────────────────────────────────
 
@@ -147,6 +143,18 @@ function computeFingerprint(samples) {
     for (const band of freqBands) {
         const vals = samples.map(s => s.freq?.[band]).filter(v => typeof v === 'number');
         fp['freq_' + band] = { mean: Math.round(fpAvg(vals) * 1000) / 1000, std: Math.round(fpStd(vals) * 1000) / 1000 };
+    }
+    // Formants vocaux F1/F2/F3 — seulement sur les frames avec parole réelle (f > 0)
+    for (const fn of ['f1', 'f2', 'f3']) {
+        const vals = samples
+            .map(s => s.formants?.[fn])
+            .filter(v => typeof v === 'number' && v > 0);
+        if (vals.length >= 5) {
+            fp['formant_' + fn] = {
+                mean: Math.round(fpAvg(vals)),
+                std:  Math.max(Math.round(fpStd(vals)), 20), // plancher 20 Hz pour éviter std=0
+            };
+        }
     }
     return fp;
 }
@@ -338,6 +346,7 @@ async function handleSaveFingerprint(req, res, ctx, { stmts, uidFor, isKnownToke
     cfg.emotionFingerprints[emotionKey] = fingerprint;
     stmts.upsertUser.run(token, cfg.displayName || row?.display_name || '???', JSON.stringify(cfg));
     invalidateFingerprintCache(token);
+    if (deps.invalidateAudioFpCache) deps.invalidateAudioFpCache(token);
     return json(res, { ok: true }, 200, req);
 }
 
@@ -359,32 +368,35 @@ async function handleDeleteFingerprint(req, res, ctx, { stmts, uidFor, isKnownTo
     }
     stmts.upsertUser.run(token, cfg.displayName || row.display_name || '???', JSON.stringify(cfg));
     invalidateFingerprintCache(token);
+    if (deps.invalidateAudioFpCache) deps.invalidateAudioFpCache(token);
     return json(res, { ok: true }, 200, req);
 }
 
-// ── Enregistrement des routes (exemple — non branché dans index.js) ──
-//
-// Pour réactiver, importer ce module dans index.js et appeler registerCalibrationRoutes :
-//
-// import { registerCalibrationRoutes } from './src/bot/calibration.js';
-// registerCalibrationRoutes({ route, requireAuth, requireClientOrAdmin, loadTier, requirePremium, deps });
-//
-// function registerCalibrationRoutes({ route, requireAuth, requireClientOrAdmin, loadTier, requirePremium, deps }) {
-//     route('POST', '/calibration/:token/reset',            requireAuth, requireClientOrAdmin, (req,res,ctx) => handleCalibrationReset(req,res,ctx,deps));
-//     route('POST', '/calibration/:token/auto-thresholds',  requireAuth, requireClientOrAdmin, (req,res,ctx) => handleAutoThresholds(req,res,ctx,deps));
-//     route('POST', '/calibration/:token/auto-emotions',    requireAuth, requireClientOrAdmin, (req,res,ctx) => handleAutoEmotions(req,res,ctx,deps));
-//     route('POST', '/calibration/:token/record-start',     requireAuth, requireClientOrAdmin, loadTier, requirePremium, (req,res,ctx) => handleRecordStart(req,res,ctx,deps));
-//     route('POST', '/calibration/:token/record-stop',      requireAuth, requireClientOrAdmin, loadTier, requirePremium, (req,res,ctx) => handleRecordStop(req,res,ctx,deps));
-//     route('POST', '/calibration/:token/save-fingerprint', requireAuth, requireClientOrAdmin, loadTier, requirePremium, (req,res,ctx) => handleSaveFingerprint(req,res,ctx,deps));
-//     route('DELETE', '/calibration/:token/fingerprint/:emotionKey', requireAuth, requireClientOrAdmin, loadTier, requirePremium, (req,res,ctx) => handleDeleteFingerprint(req,res,ctx,deps));
-// }
+/**
+ * Enregistre les routes de calibration dans le routeur principal.
+ * Branche uniquement les routes d'enregistrement d'empreintes (record/save/delete).
+ * Les routes auto-thresholds/auto-emotions restent dormantes.
+ *
+ * @param {object} p - { route, requireAuth, requireClientOrAdmin, loadTier, requirePremium, stmts, isKnownToken }
+ */
+export function registerCalibrationRoutes({ route, requireAuth, requireClientOrAdmin, loadTier, requirePremium, stmts, isKnownToken, invalidateAudioFpCache }) {
+    const deps = { stmts, uidFor, isKnownToken, recordingSessions, userBaseline, json, parseJsonBody, invalidateAudioFpCache };
 
-export {
-    fingerprintCache, FP_CACHE_TTL,
-    getFingerprints, invalidateFingerprintCache,
-    emotionState, EMOTION_CONFIRM_COUNT, EMOTION_HOLD_MS, stabilizeEmotion,
-    fpAvg, fpStd, computeFingerprint,
-    detectEmotionFromFingerprints,
-    handleCalibrationReset, handleAutoThresholds, handleAutoEmotions,
-    handleRecordStart, handleRecordStop, handleSaveFingerprint, handleDeleteFingerprint,
-};
+    route('POST', '/calibration/:token/record-start',
+        requireAuth, requireClientOrAdmin, loadTier, requirePremium,
+        (req, res, ctx) => handleRecordStart(req, res, ctx, deps));
+
+    route('POST', '/calibration/:token/record-stop',
+        requireAuth, requireClientOrAdmin, loadTier, requirePremium,
+        (req, res, ctx) => handleRecordStop(req, res, ctx, deps));
+
+    route('POST', '/calibration/:token/save-fingerprint',
+        requireAuth, requireClientOrAdmin, loadTier, requirePremium,
+        (req, res, ctx) => handleSaveFingerprint(req, res, ctx, deps));
+
+    route('DELETE', '/calibration/:token/fingerprint/:emotionKey',
+        requireAuth, requireClientOrAdmin,
+        (req, res, ctx) => handleDeleteFingerprint(req, res, ctx, deps));
+}
+
+export { computeFingerprint, invalidateFingerprintCache };
