@@ -1551,10 +1551,21 @@ httpServer = http.createServer(async (req, res) => {
         return;
     }
     // ── Résolution du fichier statique ──────────────────────────
-    // UI legacy (index.html, styles.css, viewer.html, script.js) depuis SOURCE_ROOT
-    let fp = path.resolve(path.join(STATIC_ROOT, pathname));
-    if (!fp.startsWith(path.resolve(STATIC_ROOT))) { res.writeHead(403); res.end(); return; }
-    if (serveFile(res, fp, req)) return;
+    // 1. Assets Vite (dist/assets/*) — servis depuis DIST_ROOT
+    if (REACT_BUILT && pathname.startsWith('/assets/')) {
+        const fpAsset = path.resolve(path.join(DIST_ROOT, pathname));
+        if (fpAsset.startsWith(path.resolve(DIST_ROOT)) && serveFile(res, fpAsset, req)) return;
+    }
+    // 2. Fichiers physiques depuis SOURCE_ROOT (styles.css, viewer.html, images/, etc.)
+    //    Servis en priorité : le SPA fallback ne doit pas intercepter les vrais fichiers.
+    const fpReal = path.resolve(path.join(STATIC_ROOT, pathname));
+    if (!fpReal.startsWith(path.resolve(STATIC_ROOT))) { res.writeHead(403); res.end(); return; }
+    if (serveFile(res, fpReal, req)) return;
+    // 3. SPA fallback React : toute route inconnue → dist/index.html (React Router côté client)
+    if (REACT_BUILT) {
+        const fpSpa = path.join(DIST_ROOT, 'index.html');
+        if (serveFile(res, fpSpa, req)) return;
+    }
     res.writeHead(404);
     res.end("Not found");
 }).listen(PORT, () => {
@@ -1563,7 +1574,7 @@ httpServer = http.createServer(async (req, res) => {
     console.log(`  └─ API data  : ${BASE_URL}/levels`);
     if (AUTH_ENABLED) console.log(`  └─ Auth      : OAuth2 Discord activé`);
     else console.log(`  ⚠ Auth      : DÉSACTIVÉE — toutes les routes sont publiques (configurer DISCORD_CLIENT_ID pour sécuriser)`);
-    if (!process.env.BASE_URL && !process.env.PNGTUBER_NO_BROWSER) openDefaultBrowser(`http://localhost:${PORT}/index.html`);
+    if (!process.env.BASE_URL && !process.env.PNGTUBER_NO_BROWSER) openDefaultBrowser(`http://localhost:${PORT}`);
     // GC des viewer sessions expirées (toutes les 60s, en background)
     setInterval(() => {
         const now = Date.now();
