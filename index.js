@@ -116,8 +116,9 @@ import {
 import {
     computeFreqBands, subscribeUser,
     loadBaselineFromConfig, startBaselinePersistence,
+    invalidateFingerprintCache as invalidateAudioFpCache,
 } from './src/bot/audio.js';
-// La calibration vocale (fingerprints, empreintes) est archivée dans src/bot/calibration.js (dormant, non importé)
+import { registerCalibrationRoutes } from './src/bot/calibration.js';
 
 const SOURCE_ROOT = process.cwd();
 const STATIC_ROOT = SOURCE_ROOT;
@@ -679,6 +680,7 @@ async function handleLevels(req, res, ctx) {
             db: d.db, rms: d.rms, freq: d.freq,
             freqDelta: d.freqDelta || { low: 0, mid: 0, high: 0 },
             zcr: d.zcr || 0, centroid: d.centroid || 0, energyVar: d.energyVar || 0,
+            formants: d.formants || { f1: 0, f2: 0, f3: 0 },
             detectedEmotion: manualEmotion.get(tk)?.emotion || d.detectedEmotion || null,
             state: smoothAndClassifyState(tk, d.db),
             speaking: d.speaking, displayName: d.displayName, updated: d.updated,
@@ -695,6 +697,9 @@ async function handleLevels(req, res, ctx) {
                     mid: Math.round(bl.freqStd.mid * 1000) / 1000,
                     high: Math.round(bl.freqStd.high * 1000) / 1000,
                 },
+                formantMean: bl.formantMean || null,
+                formantStd:  bl.formantStd  || null,
+                formantSampleCount: bl.formantSampleCount || 0,
                 sampleCount: bl.sampleCount,
             } : null,
         };
@@ -1411,6 +1416,12 @@ route('GET', '/api/debug-log', requireAuth, requireAdmin, async (req, res, ctx) 
 route('GET', '/api/emotion/:token', handleGetEmotion);
 route('POST', '/api/emotion/:token', requireAuth, requireClientOrAdmin, _handleSetEmotion);
 
+// Routes calibration vocale (enregistrement d'empreintes + affinage formants)
+registerCalibrationRoutes({
+    route, requireAuth, requireClientOrAdmin, loadTier, requirePremium,
+    stmts, isKnownToken, invalidateAudioFpCache,
+});
+
 // Viewer session (auth requise pour créer, public pour résoudre)
 route('POST', '/api/viewer-session', requireAuth, requireClientOrAdmin, handleCreateViewerSession);
 
@@ -1690,6 +1701,7 @@ setInterval(() => {
             db: d.db, rms: d.rms, freq: d.freq,
             freqDelta: d.freqDelta || { low: 0, mid: 0, high: 0 },
             zcr: d.zcr || 0, centroid: d.centroid || 0, energyVar: d.energyVar || 0,
+            formants: d.formants || { f1: 0, f2: 0, f3: 0 },
             detectedEmotion: manualEmotion.get(tk)?.emotion || d.detectedEmotion || null,
             state: smoothAndClassifyState(tk, d.db),
             speaking: d.speaking, displayName: d.displayName, updated: d.updated,
@@ -1706,6 +1718,9 @@ setInterval(() => {
                     mid: Math.round(bl.freqStd.mid * 1000) / 1000,
                     high: Math.round(bl.freqStd.high * 1000) / 1000,
                 },
+                formantMean: bl.formantMean || null,
+                formantStd:  bl.formantStd  || null,
+                formantSampleCount: bl.formantSampleCount || 0,
                 sampleCount: bl.sampleCount,
             } : null,
         };
